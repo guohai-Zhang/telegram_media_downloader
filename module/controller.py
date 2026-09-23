@@ -51,6 +51,7 @@ from module.gui_config import (
 
 CONNECT_TIMEOUT = 20
 CALL_TIMEOUT = 60
+STOP_WAIT = 30
 NETWORK_ERROR = "连接 Telegram 失败，请检查网络和代理设置"
 API_ERROR = "API 凭证无效，请检查 api_id 和 api_hash"
 REVOKED_NOTICE = "登录已失效，请重新登录"
@@ -141,6 +142,8 @@ class Controller:
         self._op_lock = threading.Lock()
         self._connect_future: Optional[concurrent.futures.Future] = None
         self._watch_future: Optional[concurrent.futures.Future] = None
+        # the one tracked stop, shared by stop_download/_watch_until_finished/shutdown
+        self._stop_future: Optional[concurrent.futures.Future] = None
 
     # ---- state helpers
 
@@ -483,7 +486,7 @@ class Controller:
         with self._operation(State.READY):
             self._run(self._client.log_out())
             self._client = None
-        self._begin_connect()
+            self._begin_connect()
 
     # ---- configuration
 
@@ -598,18 +601,48 @@ class Controller:
             )
 
     async def _watch_until_finished(self) -> None:
-        """When a run completes on its own, save progress and return to READY."""
+        """When a run completes on its own, hand off to `_finish_run` for READY."""
         await self._downloader.wait_until_finished()
         with self._state_lock:
             if self._state is not State.DOWNLOADING:
                 return  # stop_download() or shutdown() is handling it
             self._state = State.STOPPING
+            self._start_stop_future(f"下载完成，本次共下载 {self._app.total_download_task} 个文件")
+
+    def _start_stop_future(self, notice: str) -> concurrent.futures.Future:
+        """Start the one tracked coroutine that stops the downloader.
+
+        Called with the state already set to STOPPING, from whichever path
+        is entering it (user Stop, natural finish, or shutdown), so every
+        path shares the same `_finish_run` result instead of racing
+        separate calls to `stop_download()`. Returns the future too, so a
+        caller that just started it can use it without relying on mypy to
+        narrow `self._stop_future` from `Optional`.
+        """
+        self._stop_future = asyncio.run_coroutine_threadsafe(
+            self._finish_run(notice), self._loop
+        )
+        return self._stop_future
+
+    async def _finish_run(self, notice: str) -> Optional[str]:
+        """Stop the downloader; report success via `notice` or failure by return.
+
+        Runs as `self._stop_future`. Never raises: a failure from the
+        downloader lands the controller in ERROR and is handed back as a
+        message instead, so every caller can read `future.result()` without
+        a try/except of its own.
+        """
         try:
             await self._downloader.stop_download()
-        finally:
-            with self._state_lock:
-                self._notice = f"下载完成，本次共下载 {self._app.total_download_task} 个文件"
-            self._set_state(State.READY)
+        except Exception as e:
+            logger.exception(e)
+            message = f"停止下载时出错：{type(e).__name__}，详情见日志"
+            self._set_state(State.ERROR, message)
+            return message
+        with self._state_lock:
+            self._notice = notice
+        self._set_state(State.READY)
+        return None
 
     def stop_download(self) -> None:
         """Stop the current run; progress is saved so the next start resumes."""
@@ -617,24 +650,31 @@ class Controller:
             if self._state is not State.DOWNLOADING:
                 raise InvalidState()
             self._state = State.STOPPING
+            stop_future = self._start_stop_future("已停止，下次开始会从中断处继续")
         try:
-            self._run(self._downloader.stop_download(), timeout=30)
-        finally:
-            with self._state_lock:
-                self._notice = "已停止，下次开始会从中断处继续"
-            self._set_state(State.READY)
+            error = stop_future.result(STOP_WAIT)
+        except concurrent.futures.TimeoutError as e:
+            raise GuiError("仍在停止，请稍候", status=409) from e
+        if error:
+            raise GuiError(error, status=500)
 
     def shutdown(self, timeout: float = 10) -> None:
         """Stop any download, save progress and disconnect (window closing)."""
         with self._state_lock:
-            downloading = self._state is State.DOWNLOADING
-            if downloading:
+            if self._state is State.DOWNLOADING:
                 self._state = State.STOPPING
+                self._start_stop_future("已停止，下次开始会从中断处继续")
+            stop_future = self._stop_future
             if self._connect_future is not None:
                 self._connect_future.cancel()
+        if stop_future is not None:
+            try:
+                stop_future.result(timeout)
+            except Exception as e:
+                logger.warning(f"shutdown: stop did not finish cleanly: {e}")
+        if self._watch_future is not None:
+            self._watch_future.cancel()
         try:
-            if downloading:
-                self._run(self._downloader.stop_download(), timeout=timeout)
             self._run(self._disconnect(), timeout=5)
         except Exception as e:
             logger.warning(f"shutdown did not finish cleanly: {e}")

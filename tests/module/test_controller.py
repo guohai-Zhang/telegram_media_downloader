@@ -159,6 +159,8 @@ class FakeDownloader:
         self.finished = None
         self.started_with = None
         self.stop_calls = 0
+        self.stop_delay = 0.0
+        self.stop_error = None
 
     async def start_download(self, client):
         self.started_with = client
@@ -169,6 +171,11 @@ class FakeDownloader:
 
     async def stop_download(self):
         self.stop_calls += 1
+        if self.stop_delay:
+            await asyncio.sleep(self.stop_delay)
+        if self.stop_error:
+            error, self.stop_error = self.stop_error, None
+            raise error
         if self.finished is not None:
             self.finished.set()
 
@@ -653,3 +660,73 @@ class ConfigAndDownloadTestCase(ControllerTestBase):
         self.controller.shutdown(timeout=5)
         self.assertEqual(self.downloader.stop_calls, 1)
         self.assertIn("disconnect", self.client.calls)
+
+    @mock.patch("module.controller.STOP_WAIT", new=0.1)
+    def test_stop_timeout_returns_409_then_finishes_later(self):
+        self.ready_with_chat()
+        self.controller.start_download()
+        self.downloader.stop_delay = 1.0
+        with self.assertRaises(GuiError) as ctx:
+            self.controller.stop_download()
+        self.assertEqual(ctx.exception.status, 409)
+        self.assertIn("仍在停止", ctx.exception.message)
+        self.assertIs(self.controller.state, State.STOPPING)
+        with self.assertRaises(InvalidState):
+            self.controller.start_download()
+        self.wait_for_state(State.READY)
+
+    def test_stop_error_surfaces_as_gui_error(self):
+        self.ready_with_chat()
+        self.controller.start_download()
+        self.downloader.stop_error = RuntimeError("boom")
+        with self.assertRaises(GuiError) as ctx:
+            self.controller.stop_download()
+        self.assertEqual(ctx.exception.status, 500)
+        self.assertIn("停止下载时出错", ctx.exception.message)
+        self.assertIs(self.controller.state, State.ERROR)
+        # the failed stop never signalled "finished"; wake the watcher so it
+        # doesn't sit pending until tearDown closes the loop
+        self.loop.call_soon_threadsafe(self.downloader.finished.set)
+
+    @mock.patch("module.controller.STOP_WAIT", new=0.1)
+    def test_shutdown_waits_for_in_flight_stop_before_disconnect(self):
+        self.ready_with_chat()
+        self.controller.start_download()
+        events = []
+        orig_stop = self.downloader.stop_download
+        orig_disconnect = self.client.disconnect
+
+        async def tracked_stop():
+            result = await orig_stop()
+            events.append("stop")
+            return result
+
+        async def tracked_disconnect():
+            events.append("disconnect")
+            return await orig_disconnect()
+
+        self.downloader.stop_download = tracked_stop
+        self.client.disconnect = tracked_disconnect
+        self.downloader.stop_delay = 0.3
+
+        with self.assertRaises(GuiError):
+            self.controller.stop_download()
+        self.assertIs(self.controller.state, State.STOPPING)
+
+        self.controller.shutdown(timeout=2)
+        self.assertEqual(events, ["stop", "disconnect"])
+
+    def test_shutdown_disconnects_even_if_stop_fails(self):
+        self.ready_with_chat()
+        self.controller.start_download()
+        self.downloader.stop_error = RuntimeError("boom")
+        self.controller.shutdown(timeout=2)
+        self.assertIn("disconnect", self.client.calls)
+
+    def test_shutdown_disconnects_even_if_stop_times_out(self):
+        self.ready_with_chat()
+        self.controller.start_download()
+        self.downloader.stop_delay = 0.3
+        self.controller.shutdown(timeout=0.05)
+        self.assertIn("disconnect", self.client.calls)
+        time.sleep(0.4)  # let the abandoned stop finish before tearDown stops the loop
