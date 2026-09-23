@@ -1117,7 +1117,6 @@ async def _sleep_forever(*_args, **_kwargs):
     await asyncio.sleep(3600)
 
 
-@mock.patch("media_downloader.STOP_GRACE_SECONDS", new=0)
 class DownloadLifecycleTestCase(unittest.TestCase):
     """start_download/stop_download must be repeatable inside one process."""
 
@@ -1141,15 +1140,27 @@ class DownloadLifecycleTestCase(unittest.TestCase):
             first_queue = media_downloader.queue
             self.assertEqual(len(media_downloader._run_tasks), 4)
             self.assertTrue(app.is_running)
+            tasks = list(media_downloader._run_tasks)
 
             self.run_async(media_downloader.stop_download())
             self.assertEqual(media_downloader._run_tasks, [])
             self.assertFalse(app.is_running)
+            for task in tasks:
+                self.assertTrue(task.done())
 
             self.run_async(media_downloader.start_download(client))
             self.assertIsNot(media_downloader.queue, first_queue)
             self.assertTrue(app.is_running)
             self.run_async(media_downloader.stop_download())
+
+    def test_stop_download_is_prompt_with_idle_workers(self):
+        # Real workers block in queue.get() when idle; stop_download() must
+        # not wait for them to notice app.is_running before cancelling.
+        client = mock.Mock(spec=[])
+        with mock.patch("media_downloader.download_all_chat", new=_noop):
+            app.max_download_task = 3
+            self.run_async(media_downloader.start_download(client))
+            self.run_async(asyncio.wait_for(media_downloader.stop_download(), 1))
 
     def test_start_download_applies_concurrency(self):
         class Client:

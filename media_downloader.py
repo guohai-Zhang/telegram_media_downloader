@@ -47,8 +47,6 @@ app = Application(CONFIG_NAME, DATA_FILE_NAME, APPLICATION_NAME)
 
 queue: asyncio.Queue = asyncio.Queue()
 RETRY_TIME_OUT = 3
-# how long stop_download() lets in-flight files notice the stop flag before cancelling
-STOP_GRACE_SECONDS = 2
 _run_tasks: List[asyncio.Task] = []
 
 logging.getLogger("pyrogram.session.session").addFilter(LogFilter())
@@ -661,12 +659,16 @@ async def start_download(client: pyrogram.Client):
 
 
 async def stop_download():
-    """Stop the current run and persist progress so the next run resumes."""
+    """Stop the current run immediately and persist progress for the next run.
+
+    Cancels download_all_chat and every worker right away instead of waiting
+    for them to notice app.is_running: idle workers block in queue.get() and
+    would otherwise never see the flag, stalling every stop.
+    """
     app.is_running = False
     for value in app.chat_download_config.values():
         value.node.stop_transmission()
     if _run_tasks:
-        await asyncio.wait(_run_tasks, timeout=STOP_GRACE_SECONDS)
         for task in _run_tasks:
             task.cancel()
         await asyncio.gather(*_run_tasks, return_exceptions=True)
