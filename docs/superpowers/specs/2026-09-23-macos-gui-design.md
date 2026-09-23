@@ -77,7 +77,7 @@
 | `gui_main.py`（新） | 数据目录、单实例锁、默认配置、启动线程、创建窗口、关窗处理 | controller、web、pywebview |
 | `module/controller.py`（新） | 状态机，持有并重建客户端，登录各步骤，对话列表，开始/停止/关闭 | `module.app`、`media_downloader` 拆出的下载函数、pyrogram |
 | `media_downloader.py` | 拆出 `start_download` 和 `stop_download`，`main()` 改为调用它们 | 与现在相同 |
-| `module/download_stat.py` | 新增 `reset()` | 与现在相同 |
+| `module/download_stat.py` | 新增 `reset_download_stat()` | 与现在相同 |
 | `module/app.py` | `assign_config` 允许缺少字段，有默认值 | 与现在相同 |
 | `module/web.py` | 新增 `/api/*` 路由（只做参数校验和转发），token 校验，支持指定端口启动 | controller（GUI 模式下注入） |
 | `module/templates/index.html` | 新增设置、账号、频道标签页，以及状态栏和页脚 | 无 |
@@ -209,8 +209,8 @@ READY ──log_out()──▶ LOGGED_OUT
 
 ### `start_download(client)`（新，在 `app.loop` 中执行）
 
-1. `app.load_config()`：重新读取频道列表和 `last_read_message_id`，重建 `chat_download_config`。
-2. `download_stat.reset()`：清空 `_download_result`、速度计数，把 `_download_state` 设为 Downloading。
+1.（由 `Controller.start_download` 在调用前执行 `app.load_config()`，重建 `chat_download_config`。CLI 的配置在启动时已经加载过，这里不再重复加载。）
+2. `download_stat.reset_download_stat()`
 3. 重建模块级的 `queue = asyncio.Queue()`（现在是导入时创建的，`media_downloader.py:48`），`app.is_running = True`。
 4. `set_max_concurrent_transmissions(client, app.max_concurrent_transmissions)`：现在 CLI 只在创建客户端后调用一次（`media_downloader.py:665`）。GUI 的客户端是常驻的，所以每次开始下载都要重新调用，这样改过的并发数在下次"开始"时生效。它会重建 `asyncio.Semaphore`，在事件循环内调用也避免了信号量跨事件循环的问题。
 5. 创建任务：`download_all_chat(client)` + `app.max_download_task` 个 `worker(client)`。任务句柄保存在模块级的 `_run_tasks` 里。

@@ -44,6 +44,20 @@ def set_download_state(state: DownloadState):
     _download_state = state
 
 
+def reset_download_stat():
+    """Clear per-run progress so a new download run starts from a clean slate."""
+    # pylint: disable = W0603
+    global _total_download_speed
+    global _total_download_size
+    global _last_download_time
+    global _download_state
+    _download_result.clear()
+    _total_download_speed = 0
+    _total_download_size = 0
+    _last_download_time = time.time()
+    _download_state = DownloadState.Downloading
+
+
 async def update_download_status(
     down_byte: int,
     total_size: int,

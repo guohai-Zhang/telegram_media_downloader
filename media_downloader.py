@@ -13,7 +13,7 @@ from rich.logging import RichHandler
 
 from module.app import Application, ChatDownloadConfig, DownloadStatus, TaskNode
 from module.bot import start_download_bot, stop_download_bot
-from module.download_stat import update_download_status
+from module.download_stat import reset_download_stat, update_download_status
 from module.get_chat_history_v2 import get_chat_history_v2
 from module.language import _t
 from module.pyrogram_extension import (
@@ -47,6 +47,9 @@ app = Application(CONFIG_NAME, DATA_FILE_NAME, APPLICATION_NAME)
 
 queue: asyncio.Queue = asyncio.Queue()
 RETRY_TIME_OUT = 3
+# how long stop_download() lets in-flight files notice the stop flag before cancelling
+STOP_GRACE_SECONDS = 2
+_run_tasks: List[asyncio.Task] = []
 
 logging.getLogger("pyrogram.session.session").addFilter(LogFilter())
 logging.getLogger("pyrogram.client").addFilter(LogFilter())
@@ -616,18 +619,59 @@ async def download_all_chat(client: pyrogram.Client):
             value.need_check = True
 
 
+def _all_chats_finished() -> bool:
+    """True once every configured chat has been iterated and all its tasks are done."""
+    for value in app.chat_download_config.values():
+        if not value.need_check or value.total_task != value.finish_task:
+            return False
+    return True
+
+
 async def run_until_all_task_finish():
     """Normal download"""
     while True:
-        finish: bool = True
-        for _, value in app.chat_download_config.items():
-            if not value.need_check or value.total_task != value.finish_task:
-                finish = False
-
-        if (not app.bot_token and finish) or app.restart_program:
+        if (not app.bot_token and _all_chats_finished()) or app.restart_program:
             break
 
         await asyncio.sleep(1)
+
+
+async def wait_until_finished():
+    """Wait until the current run completes or is stopped (bot mode is ignored)."""
+    while app.is_running and not _all_chats_finished():
+        await asyncio.sleep(1)
+
+
+async def start_download(client: pyrogram.Client):
+    """Start a download run for every chat in app.chat_download_config.
+
+    Safe to call again after stop_download(): per-run state (queue, progress,
+    worker tasks, transmission semaphores) is rebuilt on the running loop.
+    """
+    # pylint: disable = W0603
+    global queue
+    reset_download_stat()
+    queue = asyncio.Queue()
+    app.is_running = True
+    set_max_concurrent_transmissions(client, app.max_concurrent_transmissions)
+    _run_tasks.clear()
+    _run_tasks.append(asyncio.ensure_future(download_all_chat(client)))
+    for _ in range(app.max_download_task):
+        _run_tasks.append(asyncio.ensure_future(worker(client)))
+
+
+async def stop_download():
+    """Stop the current run and persist progress so the next run resumes."""
+    app.is_running = False
+    for value in app.chat_download_config.values():
+        value.node.stop_transmission()
+    if _run_tasks:
+        await asyncio.wait(_run_tasks, timeout=STOP_GRACE_SECONDS)
+        for task in _run_tasks:
+            task.cancel()
+        await asyncio.gather(*_run_tasks, return_exceptions=True)
+        _run_tasks.clear()
+    app.update_config()
 
 
 def _exec_loop():
@@ -652,7 +696,6 @@ async def stop_server(client: pyrogram.Client):
 
 def main():
     """Main function of the downloader."""
-    tasks = []
     client = HookClient(
         "media_downloader",
         api_id=app.api_id,
@@ -666,15 +709,10 @@ def main():
         app.pre_run()
         init_web(app)
 
-        set_max_concurrent_transmissions(client, app.max_concurrent_transmissions)
-
         app.loop.run_until_complete(start_server(client))
         logger.success(_t("Successfully started (Press Ctrl+C to stop)"))
 
-        app.loop.create_task(download_all_chat(client))
-        for _ in range(app.max_download_task):
-            task = app.loop.create_task(worker(client))
-            tasks.append(task)
+        app.loop.run_until_complete(start_download(client))
 
         if app.bot_token:
             app.loop.run_until_complete(
@@ -689,13 +727,12 @@ def main():
         app.is_running = False
         if app.bot_token:
             app.loop.run_until_complete(stop_download_bot())
+        logger.info(f"{_t('update config')}......")
+        # cancels the workers and writes last_read_message_id / ids_to_retry
+        app.loop.run_until_complete(stop_download())
         app.loop.run_until_complete(stop_server(client))
-        for task in tasks:
-            task.cancel()
         logger.info(_t("Stopped!"))
         # check_for_updates(app.proxy)
-        logger.info(f"{_t('update config')}......")
-        app.update_config()
         logger.success(
             f"{_t('Updated last read message_id to config file')},"
             f"{_t('total download')} {app.total_download_task}, "

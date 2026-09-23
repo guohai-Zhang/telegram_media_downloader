@@ -11,6 +11,7 @@ from typing import List, Union
 import mock
 import pyrogram
 
+import media_downloader
 from media_downloader import (
     _can_download,
     _check_config,
@@ -1101,4 +1102,91 @@ class MediaDownloaderTestCase(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.loop.close()
+        # cls.loop is app.loop (asyncio.get_event_loop() returns the loop
+        # Application.__init__ created and installed as the default loop).
+        # Later test classes in this module reuse app.loop across a whole
+        # start/stop lifecycle, so it must stay open here.
+        pass
+
+
+async def _noop(*_args, **_kwargs):
+    return None
+
+
+async def _sleep_forever(*_args, **_kwargs):
+    await asyncio.sleep(3600)
+
+
+@mock.patch("media_downloader.STOP_GRACE_SECONDS", new=0)
+class DownloadLifecycleTestCase(unittest.TestCase):
+    """start_download/stop_download must be repeatable inside one process."""
+
+    def setUp(self):
+        rest_app(MOCK_CONF)
+        self.loop = app.loop
+
+    def tearDown(self):
+        rest_app(MOCK_CONF)
+
+    def run_async(self, coro):
+        return self.loop.run_until_complete(coro)
+
+    def test_start_then_stop_twice(self):
+        client = mock.Mock(spec=[])
+        with mock.patch("media_downloader.download_all_chat", new=_noop), mock.patch(
+            "media_downloader.worker", new=_sleep_forever
+        ):
+            app.max_download_task = 3
+            self.run_async(media_downloader.start_download(client))
+            first_queue = media_downloader.queue
+            self.assertEqual(len(media_downloader._run_tasks), 4)
+            self.assertTrue(app.is_running)
+
+            self.run_async(media_downloader.stop_download())
+            self.assertEqual(media_downloader._run_tasks, [])
+            self.assertFalse(app.is_running)
+
+            self.run_async(media_downloader.start_download(client))
+            self.assertIsNot(media_downloader.queue, first_queue)
+            self.assertTrue(app.is_running)
+            self.run_async(media_downloader.stop_download())
+
+    def test_start_download_applies_concurrency(self):
+        class Client:
+            max_concurrent_transmissions = 1
+
+        client = Client()
+        app.max_concurrent_transmissions = 7
+        with mock.patch("media_downloader.download_all_chat", new=_noop), mock.patch(
+            "media_downloader.worker", new=_noop
+        ):
+            self.run_async(media_downloader.start_download(client))
+            self.run_async(media_downloader.stop_download())
+        self.assertEqual(client.max_concurrent_transmissions, 7)
+
+    def test_stop_download_marks_unfinished_for_retry(self):
+        with mock.patch("media_downloader.download_all_chat", new=_noop), mock.patch(
+            "media_downloader.worker", new=_noop
+        ):
+            self.run_async(media_downloader.start_download(mock.Mock(spec=[])))
+        config = app.chat_download_config[8654123]
+        config.node.download_status[5] = DownloadStatus.Downloading
+        config.node.download_status[6] = DownloadStatus.SuccessDownload
+
+        self.run_async(media_downloader.stop_download())
+
+        self.assertIn(5, config.ids_to_retry)
+        self.assertNotIn(6, config.ids_to_retry)
+        self.assertTrue(config.node.is_stop_transmission)
+
+    def test_wait_until_finished_returns_once_stopped(self):
+        app.is_running = False
+        self.run_async(asyncio.wait_for(media_downloader.wait_until_finished(), 2))
+
+    def test_wait_until_finished_returns_when_all_chats_done(self):
+        app.is_running = True
+        for value in app.chat_download_config.values():
+            value.need_check = True
+            value.total_task = 3
+            value.finish_task = 3
+        self.run_async(asyncio.wait_for(media_downloader.wait_until_finished(), 2))
