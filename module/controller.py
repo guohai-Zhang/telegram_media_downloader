@@ -15,19 +15,39 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 import pyrogram
 from loguru import logger
 from pyrogram import raw
+from pyrogram.enums import ChatType
 from pyrogram.errors import (
     ApiIdInvalid,
     ApiIdPublishedFlood,
+    ChannelInvalid,
+    ChannelPrivate,
     FloodWait,
     PasswordHashInvalid,
+    PeerIdInvalid,
     PhoneCodeExpired,
     PhoneCodeInvalid,
     PhoneNumberInvalid,
     SessionPasswordNeeded,
     Unauthorized,
+    UsernameInvalid,
+    UsernameNotOccupied,
 )
 
-from module.gui_config import PHONE_ERROR, GuiError, InvalidState, normalize_phone
+from module.gui_config import (
+    PHONE_ERROR,
+    ChatId,
+    GuiError,
+    InvalidState,
+    find_chat,
+    merge_chats,
+    normalize_phone,
+    parse_chat_link,
+    read_basic_config,
+    read_chats,
+    validate_basic_config,
+    write_basic_config,
+    write_chats,
+)
 
 CONNECT_TIMEOUT = 20
 CALL_TIMEOUT = 60
@@ -41,6 +61,21 @@ _SIMPLE_ERRORS = (
     (PhoneCodeInvalid, "验证码不正确"),
     (PasswordHashInvalid, "两步验证密码不正确"),
 )
+LISTED_CHAT_TYPES = (ChatType.CHANNEL, ChatType.SUPERGROUP, ChatType.GROUP)
+_CHAT_NOT_FOUND = (
+    UsernameInvalid,
+    UsernameNotOccupied,
+    ChannelInvalid,
+    ChannelPrivate,
+    PeerIdInvalid,
+    KeyError,
+    ValueError,
+)
+
+
+def _connection_key(app: Any) -> tuple:
+    """Settings that require a new Telegram client when they change."""
+    return (str(app.api_id), str(app.api_hash), dict(app.proxy or {}))
 
 
 class State(Enum):
@@ -222,6 +257,7 @@ class Controller:
             self._error = ""
             self._me = None
             self._dialogs = None
+            self._resolved = {}
             self._connect_future = asyncio.run_coroutine_threadsafe(
                 self._connect(), self._loop
             )
@@ -448,3 +484,157 @@ class Controller:
             self._run(self._client.log_out())
             self._client = None
         self._begin_connect()
+
+    # ---- configuration
+
+    def get_config(self) -> Dict[str, Any]:
+        """Basic settings for the settings form."""
+        return read_basic_config(self._app)
+
+    def save_config(self, form: Dict[str, Any]) -> None:
+        """Validate and save basic settings; reconnect if connection settings changed."""
+        basic = validate_basic_config(form)
+        allowed = [s for s in State if s not in (State.DOWNLOADING, State.STOPPING)]
+        with self._operation(*allowed):
+            before = _connection_key(self._app)
+            write_basic_config(self._config_path, basic)
+            self._app.load_config()
+            changed = _connection_key(self._app) != before
+            if changed or self._state in (State.NEED_CONFIG, State.ERROR):
+                self._begin_connect()
+
+    # ---- chats
+
+    def list_dialogs(self, refresh: bool = False) -> List[Dict[str, Any]]:
+        """Channels and groups the account has joined (cached until refresh)."""
+        self._require(State.READY, State.DOWNLOADING)
+        if self._dialogs is None or refresh:
+            try:
+                dialogs = self._run(self._fetch_dialogs(), timeout=120)
+            except Exception as e:
+                raise self._map_error(e, change_state=False) from e
+            with self._state_lock:
+                self._dialogs = dialogs
+        return list(self._dialogs or [])
+
+    async def _fetch_dialogs(self) -> List[Dict[str, Any]]:
+        """Collect the joined channels and groups."""
+        result = []
+        async for dialog in self._client.get_dialogs():
+            if dialog.chat.type in LISTED_CHAT_TYPES:
+                result.append(describe_chat(dialog.chat))
+        return result
+
+    def resolve_chat(self, link: str) -> Dict[str, Any]:
+        """Look up a public chat from a t.me link or @username."""
+        username = parse_chat_link(link)
+        self._require(State.READY)
+        try:
+            chat = self._run(self._client.get_chat(username))
+        except _CHAT_NOT_FOUND as e:
+            raise GuiError("找不到这个频道，请确认链接是公开的频道或群组") from e
+        except Exception as e:
+            raise self._map_error(e, change_state=False) from e
+        info = describe_chat(chat)
+        with self._state_lock:
+            self._resolved[info["id"]] = info
+        return info
+
+    def _known_chats(self) -> Dict[Any, Dict[str, Any]]:
+        """Dialogs plus chats resolved from links, keyed by chat id."""
+        with self._state_lock:
+            known = {d["id"]: d for d in (self._dialogs or [])}
+            known.update(self._resolved)
+            return known
+
+    def current_chats(self) -> List[Dict[str, Any]]:
+        """Chats saved in config.yaml, matched to known dialogs where possible."""
+        known = self._known_chats().values()
+        result = []
+        for item in read_chats(self._config_path):
+            chat_id = item.get("chat_id")
+            match = find_chat(known, chat_id)
+            result.append(
+                {
+                    "chat_id": chat_id,
+                    "dialog_id": match["id"] if match else None,
+                    "title": match["title"] if match else str(chat_id),
+                }
+            )
+        return result
+
+    def save_chats(self, chat_ids: List[ChatId]) -> None:
+        """Save the selected chats, keeping progress of chats that stay selected."""
+        if not isinstance(chat_ids, list) or any(
+            isinstance(c, bool) or not isinstance(c, (int, str)) for c in chat_ids
+        ):
+            raise GuiError("频道列表格式不正确")
+        with self._operation(State.READY):
+            known = self._known_chats()
+            usernames = {
+                c: known[c]["username"]
+                for c in chat_ids
+                if c in known and known[c]["username"]
+            }
+            existing = read_chats(self._config_path)
+            write_chats(self._config_path, merge_chats(existing, chat_ids, usernames))
+            self._app.load_config()
+
+    # ---- downloading
+
+    def start_download(self) -> None:
+        """Reload config and start downloading every saved chat."""
+        with self._operation(State.READY):
+            self._app.load_config()
+            if not self._app.chat_download_config:
+                raise GuiError("请先在「频道」里选择要下载的频道")
+            self._app.total_download_task = 0
+            self._run(self._downloader.start_download(self._client))
+            with self._state_lock:
+                self._notice = ""
+                self._state = State.DOWNLOADING
+            self._watch_future = asyncio.run_coroutine_threadsafe(
+                self._watch_until_finished(), self._loop
+            )
+
+    async def _watch_until_finished(self) -> None:
+        """When a run completes on its own, save progress and return to READY."""
+        await self._downloader.wait_until_finished()
+        with self._state_lock:
+            if self._state is not State.DOWNLOADING:
+                return  # stop_download() or shutdown() is handling it
+            self._state = State.STOPPING
+        try:
+            await self._downloader.stop_download()
+        finally:
+            with self._state_lock:
+                self._notice = f"下载完成，本次共下载 {self._app.total_download_task} 个文件"
+            self._set_state(State.READY)
+
+    def stop_download(self) -> None:
+        """Stop the current run; progress is saved so the next start resumes."""
+        with self._state_lock:
+            if self._state is not State.DOWNLOADING:
+                raise InvalidState()
+            self._state = State.STOPPING
+        try:
+            self._run(self._downloader.stop_download(), timeout=30)
+        finally:
+            with self._state_lock:
+                self._notice = "已停止，下次开始会从中断处继续"
+            self._set_state(State.READY)
+
+    def shutdown(self, timeout: float = 10) -> None:
+        """Stop any download, save progress and disconnect (window closing)."""
+        with self._state_lock:
+            downloading = self._state is State.DOWNLOADING
+            if downloading:
+                self._state = State.STOPPING
+            if self._connect_future is not None:
+                self._connect_future.cancel()
+        try:
+            if downloading:
+                self._run(self._downloader.stop_download(), timeout=timeout)
+            self._run(self._disconnect(), timeout=5)
+        except Exception as e:
+            logger.warning(f"shutdown did not finish cleanly: {e}")

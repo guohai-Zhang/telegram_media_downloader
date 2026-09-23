@@ -478,3 +478,178 @@ class ConnectAndLoginTestCase(ControllerTestBase):
         self.controller._run(self.controller._cleanup_client(self.client))
         self.assertGreaterEqual(self.client.session.stop_calls, 1)
         self.assertGreaterEqual(self.client.storage.close_calls, 1)
+
+
+def valid_form(tmp, **overrides):
+    form = {
+        "api_id": "12345",
+        "api_hash": HASH,
+        "proxy": None,
+        "save_path": os.path.join(tmp, "dl"),
+        "media_types": ["video", "photo"],
+        "max_download_task": 3,
+    }
+    form.update(overrides)
+    return form
+
+
+class ConfigAndDownloadTestCase(ControllerTestBase):
+    def ready_with_chat(self):
+        self.ready_controller()
+        self.client.dialogs = [SimpleNamespace(chat=make_chat(-1001, "News"))]
+        self.controller.list_dialogs()
+        self.controller.save_chats([-1001])
+
+    def test_save_config_writes_file_and_connects(self):
+        self.controller.start()
+        self.client.authorized = True
+        self.controller.save_config(valid_form(self.tmp))
+        self.wait_for_state(State.READY)
+        config = self.controller.get_config()
+        self.assertEqual(config["api_id"], 12345)
+        self.assertEqual(config["max_download_task"], 3)
+        self.assertEqual(self.app.max_download_task, 3)
+
+    def test_save_config_same_credentials_does_not_reconnect(self):
+        self.controller.start()
+        self.client.authorized = True
+        self.controller.save_config(valid_form(self.tmp))
+        self.wait_for_state(State.READY)
+        connects = self.client.calls.count("connect")
+        self.controller.save_config(
+            valid_form(self.tmp, save_path=os.path.join(self.tmp, "other"))
+        )
+        self.assertIs(self.controller.state, State.READY)
+        self.assertEqual(self.client.calls.count("connect"), connects)
+
+    def test_save_config_proxy_change_reconnects(self):
+        self.controller.start()
+        self.client.authorized = True
+        self.controller.save_config(valid_form(self.tmp))
+        self.wait_for_state(State.READY)
+        connects = self.client.calls.count("connect")
+        proxy = {"scheme": "socks5", "hostname": "127.0.0.1", "port": 7890}
+        self.controller.save_config(valid_form(self.tmp, proxy=proxy))
+        self.wait_for_state(State.READY)
+        self.assertEqual(self.client.calls.count("connect"), connects + 1)
+        self.assertEqual(self.app.proxy["port"], 7890)
+
+    def test_save_config_proxy_change_clears_resolved(self):
+        self.controller.start()
+        self.client.authorized = True
+        self.controller.save_config(valid_form(self.tmp))
+        self.wait_for_state(State.READY)
+        self.client.chats["mychan"] = make_chat(-1005, "Mine", username="mychan")
+        self.controller.resolve_chat("https://t.me/mychan")
+        self.assertIn(-1005, self.controller._resolved)
+        proxy = {"scheme": "socks5", "hostname": "127.0.0.1", "port": 7890}
+        self.controller.save_config(valid_form(self.tmp, proxy=proxy))
+        self.wait_for_state(State.READY)
+        self.assertEqual(self.controller._resolved, {})
+
+    def test_save_config_rejected_while_downloading(self):
+        self.ready_with_chat()
+        self.controller.start_download()
+        with self.assertRaises(InvalidState):
+            self.controller.save_config(valid_form(self.tmp))
+        self.controller.stop_download()
+
+    def test_list_dialogs_filters_types_and_caches(self):
+        self.ready_controller()
+        self.client.dialogs = [
+            SimpleNamespace(chat=make_chat(-1001, "News", ChatType.CHANNEL, "news")),
+            SimpleNamespace(chat=make_chat(42, "Bob", ChatType.PRIVATE)),
+            SimpleNamespace(chat=make_chat(-1002, "Group", ChatType.SUPERGROUP)),
+        ]
+        dialogs = self.controller.list_dialogs()
+        self.assertEqual([d["id"] for d in dialogs], [-1001, -1002])
+        self.assertEqual(dialogs[0]["type"], "channel")
+        self.controller.list_dialogs()
+        self.assertEqual(self.client.calls.count("get_dialogs"), 1)
+        self.controller.list_dialogs(refresh=True)
+        self.assertEqual(self.client.calls.count("get_dialogs"), 2)
+
+    def test_resolve_chat_and_save(self):
+        self.ready_controller()
+        self.client.chats["mychan"] = make_chat(-1005, "Mine", username="mychan")
+        info = self.controller.resolve_chat("https://t.me/mychan")
+        self.assertEqual(info["id"], -1005)
+        self.controller.save_chats([-1005])
+        self.assertIn(-1005, self.app.chat_download_config)
+        self.assertEqual(
+            self.controller.current_chats(),
+            [{"chat_id": -1005, "dialog_id": -1005, "title": "Mine"}],
+        )
+
+    def test_resolve_unknown_chat(self):
+        self.ready_controller()
+        with self.assertRaises(GuiError) as ctx:
+            self.controller.resolve_chat("t.me/nobody_here")
+        self.assertIn("找不到", ctx.exception.message)
+        self.assertIs(self.controller.state, State.READY)
+
+    def test_save_chats_keeps_existing_progress(self):
+        write_chats(
+            self.config_path, [{"chat_id": "mychan", "last_read_message_id": 42}]
+        )
+        self.app.load_config()
+        self.ready_controller()
+        self.client.dialogs = [
+            SimpleNamespace(chat=make_chat(-1001, "Mine", username="MyChan"))
+        ]
+        self.controller.list_dialogs()
+        self.assertEqual(
+            self.controller.current_chats(),
+            [{"chat_id": "mychan", "dialog_id": -1001, "title": "Mine"}],
+        )
+        self.controller.save_chats([-1001])
+        self.assertEqual(
+            self.app.chat_download_config["mychan"].last_read_message_id, 42
+        )
+
+    def test_save_chats_rejects_bad_payload(self):
+        self.ready_controller()
+        for payload in (None, "abc", [1.5], [True]):
+            with self.subTest(payload=payload):
+                with self.assertRaises(GuiError):
+                    self.controller.save_chats(payload)
+
+    def test_start_requires_chats(self):
+        self.ready_controller()
+        with self.assertRaises(GuiError) as ctx:
+            self.controller.start_download()
+        self.assertIn("频道", ctx.exception.message)
+        self.assertIs(self.controller.state, State.READY)
+
+    def test_download_finishes_naturally(self):
+        self.ready_with_chat()
+        self.controller.start_download()
+        self.assertIs(self.controller.state, State.DOWNLOADING)
+        self.assertIs(self.downloader.started_with, self.client)
+        self.loop.call_soon_threadsafe(self.downloader.finished.set)
+        self.wait_for_state(State.READY)
+        self.assertIn("下载完成", self.controller.status()["notice"])
+        self.assertEqual(self.downloader.stop_calls, 1)
+
+    def test_stop_download(self):
+        self.ready_with_chat()
+        self.controller.start_download()
+        self.controller.stop_download()
+        self.assertIs(self.controller.state, State.READY)
+        self.assertIn("已停止", self.controller.status()["notice"])
+        time.sleep(0.2)
+        self.assertEqual(self.downloader.stop_calls, 1)
+
+    def test_start_twice_is_rejected(self):
+        self.ready_with_chat()
+        self.controller.start_download()
+        with self.assertRaises(InvalidState):
+            self.controller.start_download()
+        self.controller.stop_download()
+
+    def test_shutdown_while_downloading_stops_and_disconnects(self):
+        self.ready_with_chat()
+        self.controller.start_download()
+        self.controller.shutdown(timeout=5)
+        self.assertEqual(self.downloader.stop_calls, 1)
+        self.assertIn("disconnect", self.client.calls)
