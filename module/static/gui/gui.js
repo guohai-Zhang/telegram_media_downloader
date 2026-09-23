@@ -48,6 +48,46 @@ layui.use(['element', 'layer'], function () {
     });
   }
 
+  // Normalizes an id/username for loose comparison: strings, trimmed, no
+  // leading "@", case-insensitive. Used to match a saved chat (keyed by
+  // numeric id or by username) against a dialog when the server could not
+  // resolve it itself (e.g. its dialog cache was still empty).
+  function normalizeKey(value) {
+    return String(value === null || value === undefined ? '' : value).trim().replace(/^@/, '').toLowerCase();
+  }
+
+  // Pure merge: builds the chat-list rows from the live dialog list and the
+  // saved config chats. A saved chat with a resolved dialog_id just marks
+  // that dialog row checked. A saved chat with dialog_id === null (the
+  // server couldn't match it, e.g. because its dialog cache wasn't filled
+  // yet, or it was saved by username) is matched here by id or normalized
+  // username against the dialog list; only truly unmatched saved chats
+  // become their own "extra" row.
+  function buildChatRows(dialogs, saved) {
+    dialogs = dialogs || [];
+    saved = saved || [];
+    var checkedById = {};
+    var extra = [];
+    saved.forEach(function (c) {
+      if (c.dialog_id !== null && c.dialog_id !== undefined) {
+        checkedById[String(c.dialog_id)] = true;
+        return;
+      }
+      var normKey = normalizeKey(c.chat_id);
+      var match = dialogs.filter(function (d) {
+        return String(d.id) === String(c.chat_id) || (d.username && normalizeKey(d.username) === normKey);
+      })[0];
+      if (match) {
+        checkedById[String(match.id)] = true;
+      } else {
+        extra.push({ key: c.chat_id, title: c.title, type: '', username: '', checked: true });
+      }
+    });
+    return extra.concat(dialogs.map(function (d) {
+      return { key: d.id, title: d.title, type: d.type, username: d.username, checked: !!checkedById[String(d.id)] };
+    }));
+  }
+
   function toast(message, ok) {
     // layer.msg renders HTML, and messages can contain chat titles
     layer.msg(esc(message), { icon: ok ? 1 : 2, time: ok ? 2000 : 4000 });
@@ -264,28 +304,38 @@ layui.use(['element', 'layer'], function () {
     $('#chat_selected').text('已选 ' + selectedCount() + ' 个');
   }
 
+  var chatsLoadPromise = null;
+
   function loadChats(refresh) {
     if (!canListChats()) {
-      return;
+      return $.Deferred().resolve().promise();
     }
-    $.when(
-      api('GET', 'api/dialogs' + (refresh ? '?refresh=1' : '')),
-      api('GET', 'api/chats')
-    ).then(function (dialogs, saved) {
-      var savedIds = {};
-      var extra = [];
-      saved.forEach(function (c) {
-        if (c.dialog_id === null) {
-          extra.push({ key: c.chat_id, title: c.title, type: '', username: '', checked: true });
-        } else {
-          savedIds[String(c.dialog_id)] = true;
-        }
+    // In-flight guard: a load already running sees every dialog change and
+    // is about to render, so a second concurrent call (e.g. the tab-switch
+    // and the status-refresh both wanting to load chats on first READY)
+    // just piggybacks on it instead of firing another get_dialogs request.
+    if (chatsLoadPromise) {
+      return chatsLoadPromise;
+    }
+    // Dialogs first, then chats: current_chats() on the server matches
+    // saved chats against its dialog cache, which is empty until
+    // list_dialogs finishes. Fetching chats only after dialogs resolves
+    // avoids the race where every saved chat comes back with dialog_id:
+    // null and gets rendered as a duplicate "extra" row.
+    var dialogsRequest = api('GET', 'api/dialogs' + (refresh ? '?refresh=1' : '')).then(
+      function (dialogs) { return dialogs; },
+      function () { return []; } // still show saved chats even if dialogs failed
+    );
+    chatsLoadPromise = dialogsRequest.then(function (dialogs) {
+      return api('GET', 'api/chats').then(function (saved) {
+        chatRows = buildChatRows(dialogs, saved);
+        renderChats();
       });
-      chatRows = extra.concat(dialogs.map(function (d) {
-        return { key: d.id, title: d.title, type: d.type, username: d.username, checked: !!savedIds[String(d.id)] };
-      }));
-      renderChats();
     });
+    chatsLoadPromise.always(function () {
+      chatsLoadPromise = null;
+    });
+    return chatsLoadPromise;
   }
 
   $('#chat_search').on('input', renderChats);
@@ -298,8 +348,19 @@ layui.use(['element', 'layer'], function () {
   });
   $('#btn_add_link').on('click', function () {
     api('POST', 'api/chats/resolve', { link: $('#chat_link').val() }).then(function (info) {
-      var existing = chatRows.filter(function (r) { return String(r.key) === String(info.id); })[0];
+      // Match by id, or by normalized username: a chat saved (or added)
+      // by username before it had a numeric id, e.g. an "extra" row keyed
+      // "foo", must not turn into a second row once [添加] resolves it.
+      var normUsername = info.username ? normalizeKey(info.username) : '';
+      var existing = chatRows.filter(function (r) {
+        return String(r.key) === String(info.id) ||
+          (normUsername && (normalizeKey(r.key) === normUsername || normalizeKey(r.username) === normUsername));
+      })[0];
       if (existing) {
+        existing.key = info.id;
+        existing.title = info.title;
+        existing.type = info.type;
+        existing.username = info.username;
         existing.checked = true;
       } else {
         chatRows.unshift({ key: info.id, title: info.title, type: info.type, username: info.username, checked: true });
