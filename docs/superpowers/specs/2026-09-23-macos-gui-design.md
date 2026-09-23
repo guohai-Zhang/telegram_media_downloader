@@ -40,7 +40,9 @@
 |---|---|
 | 目标用户 | 非技术用户：双击 `.app`，全程不碰终端 |
 | 窗口形态 | pywebview 独立窗口（系统 WKWebView）。关闭窗口 = 停止下载并退出。同时提供浏览器访问地址 |
-| 配置范围 | 基础项：API 凭证、代理、保存目录、媒体类型、频道。高级项保留在 `config.yaml` 里，界面保存时不覆盖 |
+| 配置范围 | 基础项：API 凭证、代理、保存目录、媒体类型、同时下载文件数、频道。高级项保留在 `config.yaml` 里，界面保存时不覆盖 |
+| API 凭证 | 每个用户去 my.telegram.org 申请自己的并填入，app 不内置任何凭证 |
+| 并发数 | 界面上只提供"同时下载文件数"（`max_download_task`，1–10，默认 5）。`max_concurrent_transmissions` 不放进界面：没配置时仍按 ×5 自动计算，手动配置过的保持不动 |
 | 选择频道 | 登录后从对话列表勾选，另外支持粘贴 `t.me/xxx` 或 `@xxx` |
 | 实现方案 | 方案 A：单进程，常驻一个 Pyrogram 客户端，拆分 `main()` 复用下载逻辑 |
 | 架构 | 只打 arm64 包 |
@@ -210,8 +212,9 @@ READY ──log_out()──▶ LOGGED_OUT
 1. `app.load_config()`：重新读取频道列表和 `last_read_message_id`，重建 `chat_download_config`。
 2. `download_stat.reset()`：清空 `_download_result`、速度计数，把 `_download_state` 设为 Downloading。
 3. 重建模块级的 `queue = asyncio.Queue()`（现在是导入时创建的，`media_downloader.py:48`），`app.is_running = True`。
-4. 创建任务：`download_all_chat(client)` + `app.max_download_task` 个 `worker(client)`。任务句柄保存在模块级的 `_run_tasks` 里。
-5. 返回一个 `wait_until_finished()` 协程：等价于现在的 `run_until_all_task_finish()`（所有频道 `need_check` 为真，且 `total_task == finish_task`）。它完成后，controller 在事件循环里直接调用 `media_downloader.stop_download()` 收尾（不经过 controller 的公开方法 `stop_download()`，因为后者会做状态校验），然后把状态切回 READY，附带"已完成，共下载 N 个文件"。
+4. `set_max_concurrent_transmissions(client, app.max_concurrent_transmissions)`：现在 CLI 只在创建客户端后调用一次（`media_downloader.py:665`）。GUI 的客户端是常驻的，所以每次开始下载都要重新调用，这样改过的并发数在下次"开始"时生效。它会重建 `asyncio.Semaphore`，在事件循环内调用也避免了信号量跨事件循环的问题。
+5. 创建任务：`download_all_chat(client)` + `app.max_download_task` 个 `worker(client)`。任务句柄保存在模块级的 `_run_tasks` 里。
+6. 返回一个 `wait_until_finished()` 协程：等价于现在的 `run_until_all_task_finish()`（所有频道 `need_check` 为真，且 `total_task == finish_task`）。它完成后，controller 在事件循环里直接调用 `media_downloader.stop_download()` 收尾（不经过 controller 的公开方法 `stop_download()`，因为后者会做状态校验），然后把状态切回 READY，附带"已完成，共下载 N 个文件"。
 
 ### `stop_download()`（新，在 `app.loop` 中执行）
 
@@ -264,7 +267,8 @@ GUI 模式下注册 `before_request`：所有 `/api/*` 请求和所有 POST 请�
   "proxy": {"scheme": "socks5", "hostname": "127.0.0.1", "port": 7890,
             "username": "", "password": ""} ,
   "save_path": "/Users/x/Downloads/Telegram",
-  "media_types": ["video", "photo"]
+  "media_types": ["video", "photo"],
+  "max_download_task": 5
 }
 ```
 `proxy` 为 `null` 表示不使用代理。
@@ -275,8 +279,9 @@ GUI 模式下注册 `before_request`：所有 `/api/*` 请求和所有 POST 请�
    - `api_hash` 必须是 32 位十六进制
    - `proxy.scheme` 只能是 `socks5`、`http`，`port` 范围 1–65535
    - `media_types` 必须是 6 种媒体类型的非空子集
+   - `max_download_task` 必须是 1–10 的整数
    - `save_path` 不存在就创建，并用 `os.access(W_OK)` 检查可写
-2. 用 ruamel 往返读写（保留注释和字段顺序）：读取 `config.yaml`，**只更新这 5 个键**，然后写回。proxy 为 `null` 时删除 `proxy` 键；`username`、`password` 为空字符串时不写入，否则 Pyrogram 会拿空账号去做代理认证。
+2. 用 ruamel 往返读写（保留注释和字段顺序）：读取 `config.yaml`，**只更新这 6 个键**，然后写回。不写 `max_concurrent_transmissions`：没配置时由 `assign_config` 按 `max_download_task × 5` 自动计算（`module/app.py:506-510`），手动配置过的原样保留。proxy 为 `null` 时删除 `proxy` 键；`username`、`password` 为空字符串时不写入，否则 Pyrogram 会拿空账号去做代理认证。
 3. `app.load_config()`。
 4. 如果 api_id、api_hash、proxy 有改动，就重建客户端（→ CONNECTING）。
 
@@ -307,7 +312,8 @@ GUI 模式下注册 `before_request`：所有 `/api/*` 请求和所有 POST 请�
   - 代理：无 / SOCKS5 / HTTP，以及地址、端口，可选账号和密码
   - 保存目录：输入框 +[选择…]
   - 媒体类型：6 个复选框
-  - 下载中整个表单禁用
+  - 同时下载文件数：数字输入框（1–10，默认 5），旁边提示"数值越大越容易被 Telegram 限流，一般保持默认即可"
+  - 下载中整个表单禁用，修改后下次点"开始"生效
 - **账号**：按状态显示手机号、验证码、两步验证密码（附提示）表单；READY 时显示已登录信息和[退出登录]；ERROR 时显示原因和[重试]、[打开日志文件夹]。
 - **频道**：顶部搜索框（在本地过滤），下面是带复选框的对话列表（名称、类型标签、@用户名），再往下是"粘贴链接"输入框和[添加]按钮，最底部是[保存]。已在配置中但不在对话列表里的频道也要显示出来，并默认勾选。
 - **下载中 / 已完成**：保留现有的表格和接口。
@@ -380,8 +386,9 @@ GUI 模式下注册 `before_request`：所有 `/api/*` 请求和所有 POST 请�
   - 没有 token 或 token 错误返回 403
   - 各路由的参数校验，409 和 400
   - 保存配置后，高级项和注释不丢失（用一份带注释、带过滤器的 `config.yaml` 做往返测试）
+  - `max_download_task` 超出 1–10 返回 400；手动配置的 `max_concurrent_transmissions` 保存后保持不变，没配置时不会被写入
   - 保存频道：保留旧条目、新增条目默认值、顺序正确、按用户名匹配
-- `tests/test_media_downloader.py`：现有调用 `main()` 的 3 个用例保持通过。新增 `start_download` / `stop_download` 的测试：停止后 `ids_to_retry` 包含未完成的消息，`queue` 每次重建。
+- `tests/test_media_downloader.py`：现有调用 `main()` 的 3 个用例保持通过。新增 `start_download` / `stop_download` 的测试：停止后 `ids_to_retry` 包含未完成的消息，`queue` 每次重建，worker 数量等于 `max_download_task`，每次开始都会重新设置客户端的信号量。
 - `tests/module/test_download_stat.py`：`reset()`。
 - `tests/test_gui_bootstrap.py`：数据目录创建、默认配置生成、损坏配置的备份、端口被占用时换端口（先占住一个端口再启动）、单实例锁（在 Windows 上跳过）。这些测试不导入 `webview`，只测 `gui_main` 中拆出来的纯函数。
 
