@@ -69,3 +69,26 @@ class AppTestCase(unittest.TestCase):
         app.config["chat"] = [{"chat_id": 123, "last_read_message_id": 0}]
         app.update_config()
         mock_open.assert_called_with("data_test.yaml", "w", encoding="utf-8")
+
+    def test_assign_config_tolerates_missing_keys(self):
+        app = Application("", "")
+        app.assign_config({})
+        self.assertEqual(app.api_id, "")
+        self.assertEqual(app.api_hash, "")
+        self.assertEqual(app.media_types, module.app.DEFAULT_MEDIA_TYPES)
+        self.assertEqual(app.file_formats, module.app.DEFAULT_FILE_FORMATS)
+        self.assertEqual(app.chat_download_config, {})
+
+    def test_assign_config_reload_drops_removed_chats(self):
+        app = Application("", "")
+        app.assign_config({"chat": [{"chat_id": 1}, {"chat_id": 2}]})
+        app.assign_config({"chat": [{"chat_id": 2, "last_read_message_id": 9}]})
+        self.assertEqual(list(app.chat_download_config), [2])
+        self.assertEqual(app.chat_download_config[2].last_read_message_id, 9)
+
+    def test_assign_config_reload_clears_proxy(self):
+        app = Application("", "")
+        app.assign_config({"proxy": {"scheme": "socks5", "hostname": "h", "port": 1}})
+        self.assertEqual(app.proxy["port"], 1)
+        app.assign_config({})
+        self.assertEqual(app.proxy, {})

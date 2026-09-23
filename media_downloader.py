@@ -516,6 +516,10 @@ def _check_config() -> bool:
         logger.exception(f"load config error: {e}")
         return False
 
+    if not app.api_id or not app.api_hash:
+        logger.error("api_id and api_hash are required in config.yaml")
+        return False
+
     return True
 
 

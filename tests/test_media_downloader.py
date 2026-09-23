@@ -1039,6 +1039,19 @@ class MediaDownloaderTestCase(unittest.TestCase):
         app.update_config()
         self.assertEqual(_check_config(), True)
 
+    @mock.patch("media_downloader.logger")
+    def test_check_config_requires_credentials(self, mock_logger):
+        def load_without_credentials():
+            app.api_id = ""
+            app.api_hash = ""
+
+        with mock.patch("media_downloader._load_config", new=load_without_credentials):
+            self.assertFalse(_check_config())
+        mock_logger.error.assert_called_with(
+            "api_id and api_hash are required in config.yaml"
+        )
+        rest_app(MOCK_CONF)
+
     # @mock.patch(
     #     "media_downloader.queue",
     #     new=MyQueue(

@@ -22,6 +22,9 @@ from utils.meta_data import MetaData
 _yaml = yaml.YAML()
 # pylint: disable = R0902
 
+DEFAULT_MEDIA_TYPES = ["audio", "photo", "video", "document", "voice", "video_note"]
+DEFAULT_FILE_FORMATS = {"audio": ["all"], "document": ["all"], "video": ["all"]}
+
 
 class DownloadStatus(Enum):
     """Download status"""
@@ -444,18 +447,19 @@ class Application:
         if _config.get("save_path") is not None:
             self.save_path = _config["save_path"]
 
-        self.api_id = _config["api_id"]
-        self.api_hash = _config["api_hash"]
+        self.api_id = _config.get("api_id") or ""
+        self.api_hash = _config.get("api_hash") or ""
         self.bot_token = _config.get("bot_token", "")
 
-        self.media_types = _config["media_types"]
-        self.file_formats = _config["file_formats"]
+        self.media_types = _config.get("media_types") or list(DEFAULT_MEDIA_TYPES)
+        self.file_formats = _config.get("file_formats") or {
+            key: list(value) for key, value in DEFAULT_FILE_FORMATS.items()
+        }
 
         self.hide_file_name = _config.get("hide_file_name", False)
 
-        # option
-        if _config.get("proxy"):
-            self.proxy = _config["proxy"]
+        # option; assigned unconditionally so a reload can remove the proxy
+        self.proxy = _config.get("proxy") or {}
         if _config.get("restart_program"):
             self.restart_program = _config["restart_program"]
         if _config.get("file_path_prefix"):
@@ -582,6 +586,9 @@ class Application:
                 self.forward_limit_call.max_limit_call_times = forward_limit
             except ValueError:
                 pass
+
+        # rebuilt on every call so reloading config drops chats that were removed
+        self.chat_download_config = {}
 
         if _config.get("chat"):
             chat = _config["chat"]
