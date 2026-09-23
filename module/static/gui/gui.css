@@ -1,0 +1,24 @@
+/* Styles for the GUI-only parts of index.html (gui_mode). */
+.gui-bar { display: flex; align-items: center; gap: 12px; padding: 8px 0 4px; }
+.gui-bar #gui_state { font-weight: 600; }
+.gui-bar #gui_notice { color: #666; flex: 1; }
+.gui-error { color: #d9534f !important; }
+.gui-form { max-width: 760px; padding: 12px 4px; }
+.gui-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+.gui-row > label:first-child { width: 110px; flex: none; color: #555; }
+.gui-row > .layui-input { flex: 1; min-width: 200px; }
+.gui-row > .layui-input.gui-narrow { flex: none; width: 90px; min-width: 0; }
+.gui-checks label { margin-right: 12px; white-space: nowrap; }
+.gui-help { margin: 6px 0 4px 118px; color: #555; }
+.gui-help ol { padding-left: 20px; list-style: decimal; line-height: 1.8; }
+.gui-tip { color: #999; font-size: 12px; }
+.gui-card { max-width: 520px; padding: 16px 4px; }
+.gui-card .layui-input { margin: 8px 0; }
+.gui-chats-toolbar, .gui-chats-add { display: flex; gap: 8px; margin: 10px 0; max-width: 760px; }
+.gui-chat-list { max-height: calc(100vh - 340px); overflow-y: auto; border: 1px solid #eee; max-width: 760px; }
+.gui-chat-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #f3f3f3; cursor: pointer; }
+.gui-chat-title { flex: 1; }
+.gui-pywebview-only { display: none !important; }
+.has-pywebview .gui-pywebview-only { display: inline-block !important; }
+.gui-url { display: flex; align-items: center; gap: 6px; padding-top: 4px; }
+.gui-url input { width: 340px; height: 26px; font-size: 12px; }

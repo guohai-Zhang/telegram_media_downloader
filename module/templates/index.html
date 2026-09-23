@@ -7,6 +7,9 @@
   <title>Telegram Media Downloader</title>
   <link href="static/layui/css/layui.css" rel="stylesheet">
   <link href="static/css/index.css" rel="stylesheet">
+  {% if gui_mode %}
+  <link href="static/gui/gui.css" rel="stylesheet">
+  {% endif %}
   <style>
     body {
       padding: 6px 16px;
@@ -15,27 +18,34 @@
 </head>
 
 <body>
+  {% if gui_mode %}
+  <div class="gui-bar">
+    <span id="gui_state">正在加载…</span>
+    <span id="gui_notice"></span>
+    <button type="button" class="layui-btn layui-btn-sm layui-btn-disabled" id="btn_main" disabled>开始下载</button>
+  </div>
+  {% endif %}
   <div class="layui-tab" lay-filter="telegram_media_downloader">
     <div class="header-title layui-tab-brief">
       <ul class="layui-tab-title">
-        <li class="layui-this">Downloading</li>
-        <li>Downloaded</li>
-        <!-- <li>Config</li> -->
+        {% if gui_mode %}
+        <li lay-id="settings">设置</li>
+        <li lay-id="account">账号</li>
+        <li lay-id="chats">频道</li>
+        {% endif %}
+        <li class="layui-this" lay-id="downloading">{{ '下载中' if gui_mode else 'Downloading' }}</li>
+        <li lay-id="downloaded">{{ '已完成' if gui_mode else 'Downloaded' }}</li>
       </ul>
       <div class="stop-btn" id="download_state" data-value="{{ download_state }}" onclick="download_state_change(this)"> {{ download_state }} </div>
     </div>
     <div class="layui-tab-content" style="padding: 0;">
+      {% if gui_mode %}{% include "gui_panels.html" %}{% endif %}
       <div class="layui-tab-item layui-show">
         <table class="layui-hide" id="download_list" lay-filter="download_list"></table>
       </div>
       <div class="layui-tab-item">
         <table class="layui-hide" id="already_download_list" lay-filter="already_download_list"></table>
       </div>
-      <!-- <div class="layui-tab-item">
-        <form class="layui-form" action="">
-        under development
-      </form>
-      </div> -->
     </div>
   </div>
 
@@ -45,6 +55,13 @@
         <p>Telegram Media Downloader V <b id="app_version" style="color: #009688;">undefined</b>
       </div>
       <div class="layui-col-md7">
+        {% if gui_mode %}
+        <div class="gui-url">
+          <span class="gui-tip">浏览器访问：</span>
+          <input class="layui-input" id="gui_url" readonly>
+          <button type="button" class="layui-btn layui-btn-primary layui-btn-xs" id="btn_copy_url">复制</button>
+        </div>
+        {% endif %}
       </div>
       <div class="layui-col-md3">
         <div style="padding: 5px; float: right;">
@@ -63,6 +80,9 @@
   </div>
 
   <script src="static/layui/layui.js"></script>
+  {% if gui_mode %}
+  <script src="static/gui/gui.js"></script>
+  {% endif %}
   <script>
 
     layui.use(['table', 'element'], function () {
@@ -70,6 +90,11 @@
       var element = layui.element;
       var layer = layui.layer;
       var $ = layui.$;
+      function esc(value) {
+        return String(value === null || value === undefined ? '' : value).replace(/[&<>"']/g, function (c) {
+          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+      }
       var already_download_list_data = new Array()
       var download_list_table_data = new Array()
 
@@ -100,7 +125,7 @@
         elem: '#download_list'
         , data: download_list_table_data
         , title: 'download_list'
-        , height: 'full-160'
+        , height: 'full-{{ 230 if gui_mode else 160 }}'
         , limit: 10000
         , cols: [[
           { field: 'chat', title: 'chat', width: 100 },
@@ -132,7 +157,7 @@
         elem: '#already_download_list'
         , data: already_download_list_data
         , title: 'already_download_list'
-        , height: 'full-160'
+        , height: 'full-{{ 230 if gui_mode else 160 }}'
         , limit: 10000
         , cols: [[
 
@@ -162,7 +187,7 @@
                   element.progress('down-' + result[i].chat + '-' + result[i].id, progress + '%');
 
                   var download_speed_obj = $('div[lay-filter="down_speed-' + result[i].chat + '-' + result[i].id + '"]')
-                  download_speed_obj.html(result[i].download_speed)
+                  download_speed_obj.text(result[i].download_speed)
 
                   if (progress == 100) {
                     var device_obj = $('div[lay-filter="down-' + result[i].chat + '-' + result[i].id + '"] div')
@@ -193,13 +218,16 @@
               }
               // not found
               obj = $('div[lay-id="download_list"]  .layui-table-body .layui-table tbody')
-              var tr = ' <tr data-index="' + result[i].chat + '-' + result[i].id + '">' +
-                '<td data-field="id" data-key="1-0-0" class=""><div class="layui-table-cell laytable-cell-1-0-0">' + result[i].chat + '</div></td>' +
-                '<td data-field="id" data-key="1-0-1" class=""><div class="layui-table-cell laytable-cell-1-0-1">' + result[i].id + '</div></td>' +
-                '<td data-field="filename" data-key="1-0-2" class=""><div class="layui-table-cell laytable-cell-1-0-2" align="center">' + result[i].filename + '</div></td>' +
-                '<td data-field="total_size" data-key="1-0-3" class=""><div class="layui-table-cell laytable-cell-1-0-3" align="center">' + result[i].total_size + '</div></td>' +
-                '<td data-field="download_progress" data-key="1-0-4" data-content="' + result[i].download_progress + '" class=""><div class="layui-table-cell laytable-cell-1-0-4" align="center"><div class="layui-progress layui-progress-big" lay-showpercent="true" lay-filter="down-' + result[i].chat + '-' + result[i].id + '"><div class="layui-progress-bar layui-bg-blue" lay-percent="' + result[i].download_progress + '%" style="width: ' + result[i].download_progress + '%;"><span class="layui-progress-text">' + result[i].download_progress + '%</span></div></div></div></td>' +
-                '<td data-field="download_speed" data-key="1-0-5" class=""><div class="layui-table-cell laytable-cell-1-0-5" align="center"lay-filter="down_speed-' + result[i].chat + '-' + result[i].id + '">' + result[i].download_speed + '</div></td>' +
+              var r = result[i];
+              var key = esc(r.chat) + '-' + esc(r.id);
+              var progress = esc(r.download_progress);
+              var tr = ' <tr data-index="' + key + '">' +
+                '<td data-field="id" data-key="1-0-0" class=""><div class="layui-table-cell laytable-cell-1-0-0">' + esc(r.chat) + '</div></td>' +
+                '<td data-field="id" data-key="1-0-1" class=""><div class="layui-table-cell laytable-cell-1-0-1">' + esc(r.id) + '</div></td>' +
+                '<td data-field="filename" data-key="1-0-2" class=""><div class="layui-table-cell laytable-cell-1-0-2" align="center">' + esc(r.filename) + '</div></td>' +
+                '<td data-field="total_size" data-key="1-0-3" class=""><div class="layui-table-cell laytable-cell-1-0-3" align="center">' + esc(r.total_size) + '</div></td>' +
+                '<td data-field="download_progress" data-key="1-0-4" data-content="' + progress + '" class=""><div class="layui-table-cell laytable-cell-1-0-4" align="center"><div class="layui-progress layui-progress-big" lay-showpercent="true" lay-filter="down-' + key + '"><div class="layui-progress-bar layui-bg-blue" lay-percent="' + progress + '%" style="width: ' + progress + '%;"><span class="layui-progress-text">' + progress + '%</span></div></div></div></td>' +
+                '<td data-field="download_speed" data-key="1-0-5" class=""><div class="layui-table-cell laytable-cell-1-0-5" align="center" lay-filter="down_speed-' + key + '">' + esc(r.download_speed) + '</div></td>' +
                 "  </tr>";
               obj.append(tr)
               download_list_table_data.push(result[i])
@@ -254,7 +282,7 @@
               find_iter = false
 
               for (var j = 0, len2 = already_download_list_data.length; j < len2; j++) {
-                if (result[i].chat == download_list_table_data[i].chat && result[i].id == already_download_list_data[j].id) {
+                if (result[i].chat == already_download_list_data[j].chat && result[i].id == already_download_list_data[j].id) {
                   find_iter = true
                   break
                 }
@@ -265,11 +293,12 @@
               }
               // not found
               obj = $('div[lay-id="already_download_list"]  .layui-table-body .layui-table tbody')
-              var tr = ' <tr data-index="' + result[i].chat + '-' + result[i].id + '">' +
-                '<td data-field="id" data-key="2-0-0" class=""><div class="layui-table-cell laytable-cell-2-0-0">' + result[i].id + '</div></td>' +
-                '<td data-field="filename" data-key="2-0-1" class=""><div class="layui-table-cell laytable-cell-2-0-1" align="center">' + result[i].filename + '</div></td>' +
-                '<td data-field="total_size" data-key="2-0-2" class=""><div class="layui-table-cell laytable-cell-2-0-2" align="center">' + result[i].total_size + '</div></td>' +
-                '<td data-field="save_path" data-key="2-0-3" class=""><div class="layui-table-cell laytable-cell-2-0-3" align="center">' + result[i].save_path + '</div></td>' +
+              var r = result[i];
+              var tr = ' <tr data-index="' + esc(r.chat) + '-' + esc(r.id) + '">' +
+                '<td data-field="id" data-key="2-0-0" class=""><div class="layui-table-cell laytable-cell-2-0-0">' + esc(r.id) + '</div></td>' +
+                '<td data-field="filename" data-key="2-0-1" class=""><div class="layui-table-cell laytable-cell-2-0-1" align="center">' + esc(r.filename) + '</div></td>' +
+                '<td data-field="total_size" data-key="2-0-2" class=""><div class="layui-table-cell laytable-cell-2-0-2" align="center">' + esc(r.total_size) + '</div></td>' +
+                '<td data-field="save_path" data-key="2-0-3" class=""><div class="layui-table-cell laytable-cell-2-0-3" align="center">' + esc(r.save_path) + '</div></td>' +
                 "  </tr>";
               obj.append(tr)
 
@@ -288,22 +317,19 @@
       };
 
       element.on('tab(telegram_media_downloader)', function (data) {
-        if (data.index != 0) {
-          clearInterval(update_download_list_int);
-        }
-
-        if (data.index == 0) {
+        var id = $(this).attr('lay-id');
+        clearInterval(update_download_list_int);
+        clearInterval(update_already_download_list_int);
+        if (id == 'downloading') {
           update_download_list_int = self.setInterval(update_download_list, 1000);
         }
-
-        if (data.index != 1) {
-          clearInterval(update_already_download_list_int);
-        }
-
-        if (data.index == 1) {
+        if (id == 'downloaded') {
           update_already_download_list_int = self.setInterval(update_already_download_list, 1000);
         }
-
+        // layui keeps only one handler per filter, so the GUI script hooks in here
+        if (window.onGuiTabChange) {
+          window.onGuiTabChange(id);
+        }
       });
 
     });

@@ -1,0 +1,116 @@
+{# GUI-only tabs, included by index.html in gui_mode. Order must match the tab titles. #}
+<div class="layui-tab-item">
+  <form class="gui-form" id="settings_form" onsubmit="return false">
+    <fieldset class="layui-elem-field">
+      <legend>Telegram API 凭证</legend>
+      <div class="layui-field-box">
+        <div class="gui-row"><label>api_id</label><input class="layui-input" name="api_id" autocomplete="off" placeholder="一串数字"></div>
+        <div class="gui-row"><label>api_hash</label><input class="layui-input" name="api_hash" autocomplete="off" placeholder="32 位字母和数字"></div>
+        <details class="gui-help">
+          <summary>如何获取 api_id 和 api_hash？</summary>
+          <ol>
+            <li>用浏览器打开 <b>my.telegram.org</b>（在国内需要开代理），输入带国家区号的手机号，把 Telegram App 里收到的验证码填进去登录。</li>
+            <li>点击 <b>API development tools</b>。</li>
+            <li>App title 和 Short name 随便填英文，Platform 选 Desktop，点 <b>Create application</b>。</li>
+            <li>页面上的 <b>App api_id</b> 和 <b>App api_hash</b> 就是这里要填的两项。创建时如果提示 ERROR，多试几次或换一个代理节点。</li>
+          </ol>
+        </details>
+      </div>
+    </fieldset>
+    <fieldset class="layui-elem-field">
+      <legend>代理</legend>
+      <div class="layui-field-box">
+        <div class="gui-row"><label>代理类型</label>
+          <select class="layui-input" name="proxy_scheme">
+            <option value="">不使用代理</option>
+            <option value="socks5">SOCKS5</option>
+            <option value="http">HTTP</option>
+          </select>
+        </div>
+        <div id="proxy_fields">
+          <div class="gui-row"><label>地址</label><input class="layui-input" name="proxy_hostname" placeholder="127.0.0.1"></div>
+          <div class="gui-row"><label>端口</label><input class="layui-input" name="proxy_port" placeholder="例如 7890"></div>
+          <div class="gui-row"><label>用户名</label><input class="layui-input" name="proxy_username" placeholder="没有就留空"></div>
+          <div class="gui-row"><label>密码</label><input class="layui-input" type="password" name="proxy_password" placeholder="没有就留空"></div>
+        </div>
+        <p class="gui-tip">在国内需要代理才能连接 Telegram。Clash 等工具一般填 127.0.0.1，端口 7890。</p>
+      </div>
+    </fieldset>
+    <fieldset class="layui-elem-field">
+      <legend>下载</legend>
+      <div class="layui-field-box">
+        <div class="gui-row"><label>保存目录</label><input class="layui-input" name="save_path">
+          <button type="button" class="layui-btn layui-btn-primary layui-btn-sm gui-pywebview-only" id="btn_choose_folder">选择…</button>
+        </div>
+        <div class="gui-row"><label>媒体类型</label>
+          <span class="gui-checks">
+            <label><input type="checkbox" name="media_types" value="video"> 视频</label>
+            <label><input type="checkbox" name="media_types" value="photo"> 图片</label>
+            <label><input type="checkbox" name="media_types" value="document"> 文档</label>
+            <label><input type="checkbox" name="media_types" value="audio"> 音频</label>
+            <label><input type="checkbox" name="media_types" value="voice"> 语音</label>
+            <label><input type="checkbox" name="media_types" value="video_note"> 圆形视频</label>
+          </span>
+        </div>
+        <div class="gui-row"><label>同时下载文件数</label>
+          <input class="layui-input gui-narrow" type="number" min="1" max="10" name="max_download_task">
+          <span class="gui-tip">数值越大越容易被 Telegram 限流，一般保持默认 5 即可；修改后下次开始下载时生效</span>
+        </div>
+      </div>
+    </fieldset>
+    <div class="gui-row">
+      <button type="button" class="layui-btn" id="btn_save_settings">保存</button>
+      <button type="button" class="layui-btn layui-btn-primary gui-pywebview-only gui-open-log">打开日志文件夹</button>
+    </div>
+  </form>
+</div>
+
+<div class="layui-tab-item" id="panel_account">
+  <div class="gui-card" data-show="need_config">
+    <p>请先在「设置」里填写 api_id 和 api_hash 并保存。</p>
+    <p class="gui-error" data-error></p>
+  </div>
+  <div class="gui-card" data-show="connecting"><p>正在连接 Telegram…</p></div>
+  <div class="gui-card" data-show="error">
+    <p class="gui-error" data-error></p>
+    <button type="button" class="layui-btn" id="btn_retry">重试</button>
+    <button type="button" class="layui-btn layui-btn-primary gui-pywebview-only gui-open-log">打开日志文件夹</button>
+  </div>
+  <div class="gui-card" data-show="logged_out">
+    <p>用 Telegram 账号登录：</p>
+    <input class="layui-input" id="login_phone" placeholder="手机号，带国家区号，例如 +8613800000000">
+    <button type="button" class="layui-btn" id="btn_send_code">获取验证码</button>
+  </div>
+  <div class="gui-card" data-show="code_sent">
+    <p>验证码已发送到你的 Telegram App（没有登录 App 时会发短信）。</p>
+    <input class="layui-input" id="login_code" placeholder="验证码">
+    <button type="button" class="layui-btn" id="btn_sign_in">登录</button>
+    <button type="button" class="layui-btn layui-btn-primary" id="btn_resend">重新获取</button>
+  </div>
+  <div class="gui-card" data-show="need_password">
+    <p>这个账号开启了两步验证，请输入密码。</p>
+    <p class="gui-tip" id="password_hint"></p>
+    <input class="layui-input" type="password" id="login_password" placeholder="两步验证密码">
+    <button type="button" class="layui-btn" id="btn_check_password">确定</button>
+  </div>
+  <div class="gui-card" data-show="ready downloading stopping">
+    <p>已登录：<b id="account_me"></b></p>
+    <button type="button" class="layui-btn layui-btn-primary" id="btn_logout">退出登录</button>
+  </div>
+</div>
+
+<div class="layui-tab-item" id="panel_chats">
+  <div class="gui-chats-toolbar">
+    <input class="layui-input" id="chat_search" placeholder="搜索频道或群组">
+    <button type="button" class="layui-btn layui-btn-primary" id="btn_refresh_dialogs">刷新列表</button>
+  </div>
+  <div id="chat_list" class="gui-chat-list"><p class="gui-tip">登录后这里会显示你已加入的频道和群组。</p></div>
+  <div class="gui-chats-add">
+    <input class="layui-input" id="chat_link" placeholder="没加入的公开频道：粘贴链接，例如 t.me/xxx 或 @xxx">
+    <button type="button" class="layui-btn layui-btn-primary" id="btn_add_link">添加</button>
+  </div>
+  <div class="gui-row">
+    <button type="button" class="layui-btn" id="btn_save_chats">保存</button>
+    <span class="gui-tip" id="chat_selected"></span>
+  </div>
+</div>
