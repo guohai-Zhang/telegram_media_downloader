@@ -24,6 +24,7 @@ from pyrogram.errors import (
     PhoneCodeInvalid,
     PhoneNumberInvalid,
     SessionPasswordNeeded,
+    Unauthorized,
 )
 
 from module.gui_config import PHONE_ERROR, GuiError, InvalidState, normalize_phone
@@ -32,6 +33,7 @@ CONNECT_TIMEOUT = 20
 CALL_TIMEOUT = 60
 NETWORK_ERROR = "连接 Telegram 失败，请检查网络和代理设置"
 API_ERROR = "API 凭证无效，请检查 api_id 和 api_hash"
+REVOKED_NOTICE = "登录已失效，请重新登录"
 _TIMEOUTS = (asyncio.TimeoutError, concurrent.futures.TimeoutError, OSError)
 # errors that only need a message; the state stays where it is
 _SIMPLE_ERRORS = (
@@ -202,9 +204,14 @@ class Controller:
             self._set_state(State.NEED_CONFIG)
 
     def retry(self) -> None:
-        """Reconnect after a connection error."""
-        self._require(State.ERROR)
-        self._begin_connect()
+        """Reconnect after a connection error.
+
+        Goes through `_operation` so a second concurrent click gets the 409
+        "正在处理上一个操作" instead of racing `_begin_connect` and starting
+        two connects.
+        """
+        with self._operation(State.ERROR):
+            self._begin_connect()
 
     def _begin_connect(self) -> None:
         """Start (or restart) connecting in the background."""
@@ -220,20 +227,66 @@ class Controller:
             )
 
     async def _connect(self) -> None:
-        """Create a fresh client and connect; ends in READY, LOGGED_OUT or ERROR."""
+        """Create a fresh client and connect; ends in READY, LOGGED_OUT or ERROR.
+
+        CONNECT_TIMEOUT bounds `client.connect()` *and*, when the session is
+        already authorized, the whole finish-login sequence that follows —
+        pyrogram's own retry loop can otherwise keep GetState/get_me spinning
+        for minutes after a proxy drops the connection mid-handshake.
+        """
+        await self._disconnect()
+        client = self._client_factory()
+        self._client = client
         try:
-            await self._disconnect()
-            self._client = self._client_factory()
-            authorized = await asyncio.wait_for(self._client.connect(), CONNECT_TIMEOUT)
-            if authorized:
-                await self._finish_login()
-            else:
-                self._set_state(State.LOGGED_OUT)
+            await asyncio.wait_for(self._connect_and_login(client), CONNECT_TIMEOUT)
         except Exception as e:
-            error = self._map_error(e)
-            with self._state_lock:
-                if self._state is State.CONNECTING:
-                    self._state, self._error = State.ERROR, error.message
+            await self._handle_connect_failure(client, e)
+
+    async def _connect_and_login(self, client: Any) -> None:
+        """Connect `client` and, if it is already authorized, finish login."""
+        authorized = await client.connect()
+        if authorized:
+            await self._finish_login()
+        else:
+            self._set_state(State.LOGGED_OUT)
+
+    async def _handle_connect_failure(self, client: Any, e: BaseException) -> None:
+        """Clean up after a failed/cancelled connect and land in ERROR.
+
+        A `Unauthorized` error (other than `SessionPasswordNeeded`, which
+        never happens here) means the saved session was revoked elsewhere,
+        so that case is delegated to `_handle_revoked_session` instead.
+        """
+        if isinstance(e, Unauthorized) and not isinstance(e, SessionPasswordNeeded):
+            await self._handle_revoked_session(client)
+            return
+        await self._cleanup_client(client)
+        if self._client is client:
+            self._client = None
+        error = self._map_error(e)
+        with self._state_lock:
+            if self._state is State.CONNECTING:
+                self._state, self._error = State.ERROR, error.message
+
+    async def _handle_revoked_session(self, client: Any) -> None:
+        """The saved login is no longer valid: drop it and start over.
+
+        Cleans up `client`, deletes its local session storage, then creates
+        and connects a fresh (unauthorized) client so the user lands back on
+        the phone step instead of retrying the same error forever.
+        """
+        await self._cleanup_client(client)
+        storage = getattr(client, "storage", None)
+        if storage is not None:
+            await self._safe_call(storage.delete, "storage.delete")
+        fresh_client = self._client_factory()
+        self._client = fresh_client
+        try:
+            await fresh_client.connect()
+        except Exception as e:
+            logger.warning(f"reconnect after revoked session failed: {e}")
+        self._set_state(State.LOGGED_OUT)
+        self.set_notice(REVOKED_NOTICE)
 
     async def _finish_login(self) -> None:
         """The part of pyrogram's Client.start() that runs after authorization."""
@@ -247,15 +300,40 @@ class Controller:
     async def _disconnect(self) -> None:
         """Stop and forget the current client, ignoring errors."""
         client, self._client = self._client, None
+        await self._cleanup_client(client)
+
+    async def _cleanup_client(self, client: Any) -> None:
+        """Best-effort release of a client's resources; never raises.
+
+        A fully connected/initialized client is torn down the normal way.
+        A half-open client — one whose `connect()` was cancelled or failed
+        after pyrogram already created the session/socket but before
+        `is_connected` was set — is not touched by `terminate()`/`disconnect()`
+        at all, so its session and storage are stopped/closed directly here.
+        """
         if client is None:
             return
+        initialized = getattr(client, "is_initialized", False)
+        connected = getattr(client, "is_connected", False)
+        if initialized:
+            await self._safe_call(client.terminate, "terminate")
+        if connected:
+            await self._safe_call(client.disconnect, "disconnect")
+        if not initialized and not connected:
+            session = getattr(client, "session", None)
+            if session is not None:
+                await self._safe_call(session.stop, "session.stop")
+            storage = getattr(client, "storage", None)
+            if storage is not None:
+                await self._safe_call(storage.close, "storage.close")
+
+    @staticmethod
+    async def _safe_call(func: Callable[[], Any], label: str) -> None:
+        """Await `func()`, logging (not raising) on failure."""
         try:
-            if getattr(client, "is_initialized", False):
-                await client.terminate()
-            if getattr(client, "is_connected", False):
-                await client.disconnect()
+            await func()
         except Exception as e:
-            logger.warning(f"disconnect telegram client failed: {e}")
+            logger.warning(f"{label} failed: {e}")
 
     # ---- login
 

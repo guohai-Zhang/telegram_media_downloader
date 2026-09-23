@@ -20,6 +20,30 @@ from module.gui_config import GuiError, InvalidState, ensure_config_file, write_
 HASH = "0123456789abcdef0123456789abcdef"
 
 
+class FakeSession:
+    """Stands in for pyrogram's Session; records stop() calls."""
+
+    def __init__(self):
+        self.stop_calls = 0
+
+    async def stop(self):
+        self.stop_calls += 1
+
+
+class FakeStorage:
+    """Stands in for pyrogram's Storage; records close()/delete() calls."""
+
+    def __init__(self):
+        self.close_calls = 0
+        self.delete_calls = 0
+
+    async def close(self):
+        self.close_calls += 1
+
+    async def delete(self):
+        self.delete_calls += 1
+
+
 class FakeClient:
     """Stands in for HookClient; tests tweak the attributes they need."""
 
@@ -37,9 +61,16 @@ class FakeClient:
         self.is_initialized = False
         self.me = None
         self.calls = []
+        # session is created by connect(), like real pyrogram, before it
+        # awaits anything; storage exists for the client's whole lifetime.
+        self.session = None
+        self.storage = FakeStorage()
+        self.invoke_error = None
+        self.finish_login_delay = 0.0
 
     async def connect(self):
         self.calls.append("connect")
+        self.session = FakeSession()
         if self.connect_delay:
             await asyncio.sleep(self.connect_delay)
         if self.connect_error:
@@ -57,6 +88,10 @@ class FakeClient:
 
     async def invoke(self, query):
         self.calls.append(type(query).__name__)
+        if self.finish_login_delay:
+            await asyncio.sleep(self.finish_login_delay)
+        if self.invoke_error:
+            raise self.invoke_error
 
     async def get_me(self):
         return SimpleNamespace(username="alice", first_name="Alice", last_name=None)
@@ -312,3 +347,60 @@ class ConnectAndLoginTestCase(ControllerTestBase):
         self.wait_for_state(State.LOGGED_OUT)
         self.assertIn("log_out", self.client.calls)
         self.assertIsNone(self.controller.status()["me"])
+
+    @mock.patch("module.controller.CONNECT_TIMEOUT", new=0.2)
+    def test_concurrent_retry_is_rejected(self):
+        self.with_credentials()
+        self.client.connect_delay = 5
+        self.controller.start()
+        self.wait_for_state(State.ERROR)
+        connect_calls_before = self.client.calls.count("connect")
+        self.controller._op_lock.acquire()
+        try:
+            with self.assertRaises(GuiError) as ctx:
+                self.controller.retry()
+        finally:
+            self.controller._op_lock.release()
+        self.assertEqual(ctx.exception.status, 409)
+        self.assertIn("正在处理", ctx.exception.message)
+        self.assertIs(self.controller.state, State.ERROR)
+        self.assertEqual(self.client.calls.count("connect"), connect_calls_before)
+
+    @mock.patch("module.controller.CONNECT_TIMEOUT", new=0.2)
+    def test_finish_login_timeout_goes_error(self):
+        self.with_credentials()
+        self.client.authorized = True
+        self.client.finish_login_delay = 5
+        self.controller.start()
+        self.wait_for_state(State.ERROR)
+        self.assertEqual(self.controller.status()["error"], NETWORK_ERROR)
+
+    @mock.patch("module.controller.CONNECT_TIMEOUT", new=0.2)
+    def test_connect_timeout_releases_half_open_client(self):
+        self.with_credentials()
+        self.client.connect_delay = 5
+        self.controller.start()
+        self.wait_for_state(State.ERROR)
+        self.assertFalse(self.client.is_connected)
+        self.assertFalse(self.client.is_initialized)
+        self.assertGreaterEqual(self.client.session.stop_calls, 1)
+        self.assertGreaterEqual(self.client.storage.close_calls, 1)
+
+    def test_revoked_session_goes_logged_out_with_notice(self):
+        self.with_credentials()
+        self.client.authorized = True
+        self.client.invoke_error = errors.AuthKeyUnregistered()
+        fresh_client = FakeClient()
+        factory_calls = []
+
+        def factory():
+            factory_calls.append(1)
+            return self.client if len(factory_calls) == 1 else fresh_client
+
+        self.controller._client_factory = factory
+        self.controller.start()
+        self.wait_for_state(State.LOGGED_OUT)
+        self.assertEqual(self.controller.status()["notice"], "登录已失效，请重新登录")
+        self.assertEqual(self.client.storage.delete_calls, 1)
+        self.assertIs(self.controller._client, fresh_client)
+        self.assertIn("connect", fresh_client.calls)

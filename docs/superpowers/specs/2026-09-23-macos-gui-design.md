@@ -142,7 +142,7 @@
 NEED_CONFIG ──save_config(凭证齐全)──▶ CONNECTING
 CONNECTING ──connect() 返回已授权──▶ 完成初始化 ──▶ READY
 CONNECTING ──connect() 返回未授权──▶ LOGGED_OUT
-CONNECTING ──异常或超时 20s──▶ ERROR ──retry()──▶ CONNECTING
+CONNECTING ──异常或超时 20s（含 connect() 和登录初始化）──▶ ERROR ──retry()──▶ CONNECTING
 LOGGED_OUT ──send_code(phone)──▶ CODE_SENT
 CODE_SENT ──sign_in 成功──▶ 完成初始化 ──▶ READY
 CODE_SENT ──SessionPasswordNeeded──▶ NEED_PASSWORD
@@ -194,6 +194,7 @@ READY ──log_out()──▶ LOGGED_OUT
 | `PasswordHashInvalid` | 两步验证密码不正确 | 保持 NEED_PASSWORD |
 | `FloodWait(x)` | 操作太频繁，请 x 秒后再试 | 保持当前状态 |
 | `ApiIdInvalid`、`ApiIdPublishedFlood` | API 凭证无效，请检查 api_id 和 api_hash | → NEED_CONFIG |
+| `Unauthorized`（会话失效，如 AuthKeyUnregistered、SessionRevoked） | 登录已失效，请重新登录 | 删除本地 session → LOGGED_OUT |
 | 连接超时或 `OSError` | 连接 Telegram 失败，请检查网络和代理设置 | → ERROR |
 | 其他异常 | 出错了：<异常类名>，详情见日志 | → ERROR，写日志 |
 
