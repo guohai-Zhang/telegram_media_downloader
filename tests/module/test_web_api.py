@@ -1,0 +1,209 @@
+"""test GUI web api"""
+
+import json
+import platform
+import socket
+import unittest
+
+from module import download_stat, web
+from module.gui_config import GuiError, InvalidState
+
+TOKEN = "tok-123"
+
+
+class FakeController:
+    def __init__(self):
+        self.received = []
+        self.raise_on = {}
+
+    def _call(self, name, *args):
+        self.received.append((name,) + args)
+        if name in self.raise_on:
+            raise self.raise_on[name]
+        return {"called": name}
+
+    def status(self):
+        return self._call("status")
+
+    def get_config(self):
+        return self._call("get_config")
+
+    def save_config(self, form):
+        self._call("save_config", form)
+
+    def retry(self):
+        self._call("retry")
+
+    def send_code(self, phone):
+        self._call("send_code", phone)
+
+    def sign_in(self, code):
+        self._call("sign_in", code)
+
+    def check_password(self, password):
+        self._call("check_password", password)
+
+    def log_out(self):
+        self._call("log_out")
+
+    def list_dialogs(self, refresh=False):
+        return self._call("list_dialogs", refresh)
+
+    def resolve_chat(self, link):
+        return self._call("resolve_chat", link)
+
+    def current_chats(self):
+        return self._call("current_chats")
+
+    def save_chats(self, chat_ids):
+        self._call("save_chats", chat_ids)
+
+    def start_download(self):
+        self._call("start_download")
+
+    def stop_download(self):
+        self._call("stop_download")
+
+
+class WebApiTestCase(unittest.TestCase):
+    def setUp(self):
+        download_stat.reset_download_stat()
+        self.login_disabled = web.get_flask_app().config.get("LOGIN_DISABLED", False)
+        self.controller = FakeController()
+        web.register_gui(self.controller, TOKEN)
+        self.client = web.get_flask_app().test_client()
+        self.headers = {"X-Token": TOKEN}
+
+    def tearDown(self):
+        web._gui["controller"] = None
+        web._gui["token"] = ""
+        web.get_flask_app().config["LOGIN_DISABLED"] = self.login_disabled
+        download_stat.reset_download_stat()
+
+    def test_api_requires_token(self):
+        self.assertEqual(self.client.get("/api/status").status_code, 403)
+        self.assertEqual(
+            self.client.get("/api/status", headers={"X-Token": "bad"}).status_code, 403
+        )
+        res = self.client.get("/api/status", headers=self.headers)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json(), {"ok": True, "data": {"called": "status"}})
+
+    def test_non_ascii_token_is_forbidden_not_500(self):
+        res = self.client.get("/api/status", headers={"X-Token": "tök"})
+        self.assertEqual(res.status_code, 403)
+
+    def test_existing_post_routes_require_token_in_gui_mode(self):
+        res = self.client.post("/set_download_state?state=pause")
+        self.assertEqual(res.status_code, 403)
+        res = self.client.post("/set_download_state?state=pause", headers=self.headers)
+        self.assertEqual(res.status_code, 200)
+
+    def test_api_is_404_without_gui(self):
+        web._gui["controller"] = None
+        self.assertEqual(
+            self.client.get("/api/status", headers=self.headers).status_code, 404
+        )
+
+    def test_errors_are_json(self):
+        cases = [
+            (GuiError("坏了"), 400, "坏了"),
+            (InvalidState(), 409, "当前状态下不能执行这个操作"),
+            (RuntimeError("boom"), 500, "出错了：RuntimeError，详情见日志"),
+        ]
+        for error, status, message in cases:
+            with self.subTest(error=error):
+                self.controller.raise_on["start_download"] = error
+                res = self.client.post("/api/download/start", headers=self.headers)
+                self.assertEqual(res.status_code, status)
+                self.assertEqual(res.get_json(), {"ok": False, "error": message})
+
+    def test_routes_forward_arguments(self):
+        h = self.headers
+        self.client.post("/api/config", json={"api_id": "1"}, headers=h)
+        self.client.post("/api/retry", headers=h)
+        self.client.post("/api/login/phone", json={"phone": "+1"}, headers=h)
+        self.client.post("/api/login/code", json={"code": "123"}, headers=h)
+        self.client.post("/api/login/password", json={"password": "pw"}, headers=h)
+        self.client.post("/api/logout", headers=h)
+        self.client.get("/api/dialogs?refresh=1", headers=h)
+        self.client.get("/api/dialogs", headers=h)
+        self.client.post("/api/chats/resolve", json={"link": "t.me/x"}, headers=h)
+        self.client.get("/api/chats", headers=h)
+        self.client.post("/api/chats", json={"chat_ids": [1, "a"]}, headers=h)
+        self.client.post("/api/download/start", headers=h)
+        self.client.post("/api/download/stop", headers=h)
+        self.client.get("/api/config", headers=h)
+        self.assertEqual(
+            self.controller.received,
+            [
+                ("save_config", {"api_id": "1"}),
+                ("retry",),
+                ("send_code", "+1"),
+                ("sign_in", "123"),
+                ("check_password", "pw"),
+                ("log_out",),
+                ("list_dialogs", True),
+                ("list_dialogs", False),
+                ("resolve_chat", "t.me/x"),
+                ("current_chats",),
+                ("save_chats", [1, "a"]),
+                ("start_download",),
+                ("stop_download",),
+                ("get_config",),
+            ],
+        )
+
+    def test_non_object_json_body_is_treated_as_empty(self):
+        self.client.post(
+            "/api/login/phone",
+            data="[1]",
+            headers=dict(self.headers, **{"Content-Type": "application/json"}),
+        )
+        self.assertEqual(self.controller.received, [("send_code", "")])
+
+    def test_download_list_is_valid_json_with_hostile_names(self):
+        name = '/tmp/x/a"b<script>alert(1)</script>.mp4'
+        download_stat.get_download_result()[-100] = {
+            7: {
+                "down_byte": 50,
+                "total_size": 100,
+                "file_name": name,
+                "download_speed": 10,
+            },
+            8: {
+                "down_byte": 0,
+                "total_size": 0,
+                "file_name": "/tmp/empty.bin",
+                "download_speed": 0,
+            },
+        }
+        res = self.client.get("/get_download_list?already_down=false")
+        rows = json.loads(res.data)
+        self.assertEqual(rows[0]["filename"], 'a"b<script>alert(1)</script>.mp4')
+        self.assertEqual(rows[0]["download_progress"], "50.0")
+        self.assertEqual(rows[1]["download_progress"], "0")
+
+    @unittest.skipIf(platform.system() == "Windows", "SO_REUSEADDR differs on Windows")
+    def test_make_web_server_falls_back_when_port_taken(self):
+        blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen(1)
+        taken = blocker.getsockname()[1]
+        try:
+            server, port = web.make_web_server("127.0.0.1", taken)
+            try:
+                self.assertNotEqual(port, taken)
+                self.assertGreater(port, 0)
+            finally:
+                server.server_close()
+        finally:
+            blocker.close()
+
+    def test_index_renders_gui_mode_flag(self):
+        res = self.client.get("/")
+        self.assertIn(b"static/gui/gui.js", res.data)
+        web._gui["controller"] = None
+        web.get_flask_app().config["LOGIN_DISABLED"] = True
+        res = self.client.get("/")
+        self.assertNotIn(b"static/gui/gui.js", res.data)

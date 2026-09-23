@@ -251,12 +251,12 @@ GUI 模式下注册 `before_request`：所有 `/api/*` 请求和所有 POST 请�
 | `POST /api/logout` | 无 | `log_out()` |
 | `GET /api/dialogs?refresh=0|1` | 无 | `list_dialogs()` → `[{id, title, type, username}]`，只包含频道、群组、超级群组 |
 | `POST /api/chats/resolve` | `{link}` | `resolve_chat()` → `{id, title, type, username}` |
-| `GET /api/chats` | 无 | 当前 `config.yaml` 里的频道：`[{id, title?}]` |
+| `GET /api/chats` | 无 | 当前 `config.yaml` 里的频道：`[{chat_id, dialog_id, title}]`（`chat_id` 是配置里的原值，`dialog_id` 是匹配到的对话 id，匹配不到时为 null） |
 | `POST /api/chats` | `{chat_ids: [...]}` | `save_chats()` |
 | `POST /api/download/start` | 无 | `start_download()` |
 | `POST /api/download/stop` | 无 | `stop_download()` |
 
-返回格式：成功 `{"ok": true, ...}`；失败 `{"ok": false, "error": "<中文提示>"}`，状态码 400（参数错误）、409（当前状态不允许）或 500。
+返回格式：成功 `{"ok": true, "data": ...}`；失败 `{"ok": false, "error": "<中文提示>"}`，状态码 400（参数错误）、409（当前状态不允许）或 500。
 
 ### 保存配置 `POST /api/config`
 
