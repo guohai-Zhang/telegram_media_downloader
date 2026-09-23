@@ -163,7 +163,7 @@ class WebApiTestCase(unittest.TestCase):
         self.assertEqual(self.controller.received, [("send_code", "")])
 
     def test_download_list_is_valid_json_with_hostile_names(self):
-        name = '/tmp/x/a"b<script>alert(1)</script>.mp4'
+        name = '/tmp/x/a"b<img src=x onerror=alert(1)>.mp4'
         download_stat.get_download_result()[-100] = {
             7: {
                 "down_byte": 50,
@@ -180,7 +180,7 @@ class WebApiTestCase(unittest.TestCase):
         }
         res = self.client.get("/get_download_list?already_down=false")
         rows = json.loads(res.data)
-        self.assertEqual(rows[0]["filename"], 'a"b<script>alert(1)</script>.mp4')
+        self.assertEqual(rows[0]["filename"], 'a"b<img src=x onerror=alert(1)>.mp4')
         self.assertEqual(rows[0]["download_progress"], "50.0")
         self.assertEqual(rows[1]["download_progress"], "0")
 
