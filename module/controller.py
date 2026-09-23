@@ -229,15 +229,19 @@ class Controller:
     async def _connect(self) -> None:
         """Create a fresh client and connect; ends in READY, LOGGED_OUT or ERROR.
 
-        CONNECT_TIMEOUT bounds `client.connect()` *and*, when the session is
-        already authorized, the whole finish-login sequence that follows —
-        pyrogram's own retry loop can otherwise keep GetState/get_me spinning
-        for minutes after a proxy drops the connection mid-handshake.
+        CONNECT_TIMEOUT bounds `client_factory()` + `client.connect()` *and*,
+        when the session is already authorized, the whole finish-login
+        sequence that follows — pyrogram's own retry loop can otherwise keep
+        GetState/get_me spinning for minutes after a proxy drops the
+        connection mid-handshake. Creating the client is inside the guarded
+        block too, so a `client_factory()` failure ends in ERROR instead of
+        leaving an exception on an unread future.
         """
         await self._disconnect()
-        client = self._client_factory()
-        self._client = client
+        client = None
         try:
+            client = self._client_factory()
+            self._client = client
             await asyncio.wait_for(self._connect_and_login(client), CONNECT_TIMEOUT)
         except Exception as e:
             await self._handle_connect_failure(client, e)
@@ -253,38 +257,63 @@ class Controller:
     async def _handle_connect_failure(self, client: Any, e: BaseException) -> None:
         """Clean up after a failed/cancelled connect and land in ERROR.
 
-        A `Unauthorized` error (other than `SessionPasswordNeeded`, which
-        never happens here) means the saved session was revoked elsewhere,
-        so that case is delegated to `_handle_revoked_session` instead.
+        A revoked session is detected either directly — `e` is an
+        `Unauthorized` error other than `SessionPasswordNeeded` — or
+        indirectly: cleaning up a half-open client can itself surface one
+        (pyrogram's transport -404 `Unauthorized` raised from inside
+        `session.stop()` after a Ping timeout, which the outer
+        CONNECT_TIMEOUT would otherwise turn into a plain NETWORK_ERROR
+        forever). Either way, `_handle_revoked_session` runs instead of the
+        generic ERROR path below.
         """
-        if isinstance(e, Unauthorized) and not isinstance(e, SessionPasswordNeeded):
-            await self._handle_revoked_session(client)
-            return
-        await self._cleanup_client(client)
+        direct = isinstance(e, Unauthorized) and not isinstance(
+            e, SessionPasswordNeeded
+        )
+        cleanup_revoked = await self._cleanup_client(client)
         if self._client is client:
             self._client = None
+        if direct or cleanup_revoked:
+            await self._handle_revoked_session(client)
+            return
         error = self._map_error(e)
         with self._state_lock:
             if self._state is State.CONNECTING:
                 self._state, self._error = State.ERROR, error.message
 
-    async def _handle_revoked_session(self, client: Any) -> None:
+    async def _handle_revoked_session(self, old_client: Any) -> None:
         """The saved login is no longer valid: drop it and start over.
 
-        Cleans up `client`, deletes its local session storage, then creates
-        and connects a fresh (unauthorized) client so the user lands back on
-        the phone step instead of retrying the same error forever.
+        `old_client` has already been cleaned up by the caller. This
+        deletes its local session storage (best-effort) and hands off to
+        `_reconnect_after_revoke` for the fresh, timeout-bounded reconnect.
         """
-        await self._cleanup_client(client)
-        storage = getattr(client, "storage", None)
+        storage = getattr(old_client, "storage", None)
         if storage is not None:
             await self._safe_call(storage.delete, "storage.delete")
-        fresh_client = self._client_factory()
-        self._client = fresh_client
+        await self._reconnect_after_revoke()
+
+    async def _reconnect_after_revoke(self) -> None:
+        """Create and connect a fresh, unauthorized client after a revoke.
+
+        Bounded by CONNECT_TIMEOUT (creating the client included, same
+        reasoning as `_connect`): success lands in LOGGED_OUT with the
+        revoked-session notice; any failure or timeout — including one
+        stuck creating a brand-new auth key against a dead network — cleans
+        up the fresh client and lands in ERROR with NETWORK_ERROR instead of
+        hanging in CONNECTING or leaking that client.
+        """
+        fresh_client = None
         try:
-            await fresh_client.connect()
+            fresh_client = self._client_factory()
+            self._client = fresh_client
+            await asyncio.wait_for(fresh_client.connect(), CONNECT_TIMEOUT)
         except Exception as e:
+            await self._cleanup_client(fresh_client)
+            if self._client is fresh_client:
+                self._client = None
             logger.warning(f"reconnect after revoked session failed: {e}")
+            self._set_state(State.ERROR, NETWORK_ERROR)
+            return
         self._set_state(State.LOGGED_OUT)
         self.set_notice(REVOKED_NOTICE)
 
@@ -302,38 +331,73 @@ class Controller:
         client, self._client = self._client, None
         await self._cleanup_client(client)
 
-    async def _cleanup_client(self, client: Any) -> None:
+    async def _cleanup_client(self, client: Any) -> bool:
         """Best-effort release of a client's resources; never raises.
 
-        A fully connected/initialized client is torn down the normal way.
-        A half-open client — one whose `connect()` was cancelled or failed
-        after pyrogram already created the session/socket but before
-        `is_connected` was set — is not touched by `terminate()`/`disconnect()`
-        at all, so its session and storage are stopped/closed directly here.
+        Returns whether cleanup itself surfaced a revoked-session
+        `Unauthorized` (other than `SessionPasswordNeeded`) — pyrogram can
+        raise that from `session.stop()` (see `_handle_connect_failure`).
+
+        `terminate()`/`disconnect()` are tried first, matching real
+        pyrogram's own teardown (only a successful `disconnect()` closes
+        the session/storage internally there). `session.stop()`/
+        `storage.close()` are then tried too as a fallback whenever: the
+        client was never connected/initialized in the first place (the
+        half-open client from I2 — neither call even runs), or `terminate()`
+        /`disconnect()` was attempted but raised partway through (F4) —
+        either way the session/storage handle would otherwise leak.
         """
         if client is None:
-            return
+            return False
+        revoked = False
         initialized = getattr(client, "is_initialized", False)
         connected = getattr(client, "is_connected", False)
+        terminate_failed = False
         if initialized:
-            await self._safe_call(client.terminate, "terminate")
+            err = await self._safe_call(client.terminate, "terminate")
+            revoked = revoked or self._is_revoked(err)
+            terminate_failed = err is not None
+        disconnect_failed = False
         if connected:
-            await self._safe_call(client.disconnect, "disconnect")
-        if not initialized and not connected:
-            session = getattr(client, "session", None)
-            if session is not None:
-                await self._safe_call(session.stop, "session.stop")
-            storage = getattr(client, "storage", None)
-            if storage is not None:
-                await self._safe_call(storage.close, "storage.close")
+            err = await self._safe_call(client.disconnect, "disconnect")
+            revoked = revoked or self._is_revoked(err)
+            disconnect_failed = err is not None
+        never_opened = not initialized and not connected
+        if never_opened or terminate_failed or disconnect_failed:
+            revoked = await self._cleanup_session_storage(client) or revoked
+        return revoked
+
+    async def _cleanup_session_storage(self, client: Any) -> bool:
+        """Fallback half of `_cleanup_client`: stop the session, close storage."""
+        revoked = False
+        session = getattr(client, "session", None)
+        if session is not None:
+            err = await self._safe_call(session.stop, "session.stop")
+            revoked = revoked or self._is_revoked(err)
+        storage = getattr(client, "storage", None)
+        if storage is not None:
+            err = await self._safe_call(storage.close, "storage.close")
+            revoked = revoked or self._is_revoked(err)
+        return revoked
 
     @staticmethod
-    async def _safe_call(func: Callable[[], Any], label: str) -> None:
-        """Await `func()`, logging (not raising) on failure."""
+    def _is_revoked(err: Optional[BaseException]) -> bool:
+        """Whether `err` is a revoked-session `Unauthorized` (not a password one)."""
+        return isinstance(err, Unauthorized) and not isinstance(
+            err, SessionPasswordNeeded
+        )
+
+    @staticmethod
+    async def _safe_call(
+        func: Callable[[], Any], label: str
+    ) -> Optional[BaseException]:
+        """Await `func()`, logging (not raising) on failure; returns the error, if any."""
         try:
             await func()
         except Exception as e:
             logger.warning(f"{label} failed: {e}")
+            return e
+        return None
 
     # ---- login
 

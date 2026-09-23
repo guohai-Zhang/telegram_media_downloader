@@ -25,9 +25,12 @@ class FakeSession:
 
     def __init__(self):
         self.stop_calls = 0
+        self.stop_error = None
 
     async def stop(self):
         self.stop_calls += 1
+        if self.stop_error:
+            raise self.stop_error
 
 
 class FakeStorage:
@@ -67,10 +70,16 @@ class FakeClient:
         self.storage = FakeStorage()
         self.invoke_error = None
         self.finish_login_delay = 0.0
+        self.terminate_error = None
+        self.disconnect_error = None
+        # carried onto whatever FakeSession connect() creates next, so it's
+        # set before start() even if connect() hasn't run yet.
+        self.session_stop_error = None
 
     async def connect(self):
         self.calls.append("connect")
         self.session = FakeSession()
+        self.session.stop_error = self.session_stop_error
         if self.connect_delay:
             await asyncio.sleep(self.connect_delay)
         if self.connect_error:
@@ -81,10 +90,16 @@ class FakeClient:
     async def disconnect(self):
         self.calls.append("disconnect")
         self.is_connected = False
+        if self.disconnect_error:
+            error, self.disconnect_error = self.disconnect_error, None
+            raise error
 
     async def terminate(self):
         self.calls.append("terminate")
         self.is_initialized = False
+        if self.terminate_error:
+            error, self.terminate_error = self.terminate_error, None
+            raise error
 
     async def invoke(self, query):
         self.calls.append(type(query).__name__)
@@ -404,3 +419,62 @@ class ConnectAndLoginTestCase(ControllerTestBase):
         self.assertEqual(self.client.storage.delete_calls, 1)
         self.assertIs(self.controller._client, fresh_client)
         self.assertIn("connect", fresh_client.calls)
+
+    @mock.patch("module.controller.CONNECT_TIMEOUT", new=0.2)
+    def test_revoked_session_reconnect_timeout_goes_error(self):
+        self.with_credentials()
+        self.client.authorized = True
+        self.client.invoke_error = errors.AuthKeyUnregistered()
+        fresh_client = FakeClient()
+        fresh_client.connect_delay = 5
+        factory_calls = []
+
+        def factory():
+            factory_calls.append(1)
+            return self.client if len(factory_calls) == 1 else fresh_client
+
+        self.controller._client_factory = factory
+        self.controller.start()
+        self.wait_for_state(State.ERROR)
+        self.assertEqual(self.controller.status()["error"], NETWORK_ERROR)
+        self.assertGreaterEqual(fresh_client.session.stop_calls, 1)
+        self.assertGreaterEqual(fresh_client.storage.close_calls, 1)
+        self.assertIsNone(self.controller._client)
+
+    @mock.patch("module.controller.CONNECT_TIMEOUT", new=0.2)
+    def test_transport_404_during_cleanup_goes_logged_out_with_notice(self):
+        self.with_credentials()
+        self.client.connect_delay = 5
+        self.client.session_stop_error = errors.AuthKeyUnregistered()
+        fresh_client = FakeClient()
+        factory_calls = []
+
+        def factory():
+            factory_calls.append(1)
+            return self.client if len(factory_calls) == 1 else fresh_client
+
+        self.controller._client_factory = factory
+        self.controller.start()
+        self.wait_for_state(State.LOGGED_OUT)
+        self.assertEqual(self.controller.status()["notice"], "登录已失效，请重新登录")
+        self.assertEqual(self.client.storage.delete_calls, 1)
+        self.assertIs(self.controller._client, fresh_client)
+
+    def test_factory_failure_goes_error(self):
+        self.with_credentials()
+
+        def bad_factory():
+            raise RuntimeError("boom")
+
+        self.controller._client_factory = bad_factory
+        self.controller.start()
+        self.wait_for_state(State.ERROR)
+        self.assertIn("出错了", self.controller.status()["error"])
+        self.assertIn("RuntimeError", self.controller.status()["error"])
+
+    def test_terminate_failure_still_closes_session_and_storage(self):
+        self.ready_controller()
+        self.client.terminate_error = RuntimeError("terminate boom")
+        self.controller._run(self.controller._cleanup_client(self.client))
+        self.assertGreaterEqual(self.client.session.stop_calls, 1)
+        self.assertGreaterEqual(self.client.storage.close_calls, 1)
