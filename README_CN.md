@@ -58,6 +58,47 @@
 
 * [v2.2.0](https://github.com/tangyoha/telegram_media_downloader/issues/2)
 
+## Mac 图形版
+
+不想用命令行的话，可以直接用 Mac 图形版：双击打开，在窗口里完成配置、登录、选频道和下载，并实时查看进度。
+
+**要求**：Apple Silicon（M1/M2/M3/M4）的 Mac，macOS 11 及以上。不需要安装 Python。
+
+### 下载安装
+
+1. 打开 [Releases](https://github.com/guohai-Zhang/telegram_media_downloader/releases)，下载 `TelegramDownloader-版本号-arm64.dmg`。
+2. 双击 `.dmg`，把「TelegramDownloader」拖到「应用程序」文件夹。
+
+### 第一次打开
+
+这个应用没有经过 Apple 公证，第一次打开会被系统拦截，放行一次即可：
+
+- **macOS 14 及以下**：在「应用程序」里**右键点击**图标 → 打开 → 在弹窗中再点「打开」。
+- **macOS 15 及以上**：先双击一次（会提示无法打开），然后打开「系统设置 → 隐私与安全性」，往下滚动找到「仍要打开」并点击，输入开机密码。
+- 如果提示「已损坏，无法打开」：打开「终端」，执行下面这行命令后再双击打开：
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/TelegramDownloader.app
+  ```
+
+### 使用步骤
+
+1. **设置**：填写 api_id 和 api_hash（界面上有获取步骤）。在国内还需要填代理，例如 SOCKS5、`127.0.0.1`、`7890`。然后点保存。
+2. **账号**：填写带国家区号的手机号 → 输入 Telegram App 里收到的验证码 → 如果开启了两步验证，再输入密码。
+3. **频道**：勾选要下载的频道或群组，没加入的公开频道可以粘贴 `t.me/xxx` 链接添加，然后点保存。
+4. 点顶部的「开始下载」，在「下载中」查看进度。可以随时暂停或停止，下次开始会从中断处继续。
+
+窗口底部有「浏览器访问」地址，复制后也可以在浏览器里查看。
+
+### 数据位置
+
+配置、登录状态和日志保存在 `~/Library/Application Support/TelegramMediaDownloader/`，覆盖安装新版本不会丢失。默认下载到 `~/Downloads/Telegram`。
+
+### 自己构建
+
+```sh
+make mac-app   # 需要 Apple Silicon Mac 和 uv，产物在 dist/
+```
+
 ## 安装
 
 对于具有 `make` 可用性的 *nix 操作系统发行版
