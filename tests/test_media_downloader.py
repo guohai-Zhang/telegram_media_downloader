@@ -25,7 +25,7 @@ from media_downloader import (
     save_msg_to_file,
     worker,
 )
-from module.app import Application, DownloadStatus, TaskNode
+from module.app import Application, ChatDownloadConfig, DownloadStatus, TaskNode
 from module.cloud_drive import CloudDriveConfig
 from module.pyrogram_extension import (
     get_extension,
@@ -1201,3 +1201,43 @@ class DownloadLifecycleTestCase(unittest.TestCase):
             value.total_task = 3
             value.finish_task = 3
         self.run_async(asyncio.wait_for(media_downloader.wait_until_finished(), 2))
+
+
+class RetryBatchTestCase(unittest.TestCase):
+    """Retry ids left by a stopped run must all be re-queued, not just the first
+    200 (Telegram returns at most 200 messages per get_messages call)."""
+
+    def setUp(self):
+        rest_app(MOCK_CONF)
+
+    def tearDown(self):
+        rest_app(MOCK_CONF)
+
+    def test_retry_ids_are_fetched_in_batches(self):
+        calls = []
+
+        class Client:
+            async def get_messages(self, chat_id, message_ids):
+                ids = list(message_ids)
+                calls.append(ids)
+                return [
+                    MockMessage(id=i, media=True, chat_id=chat_id, chat_title="c")
+                    for i in ids[:200]
+                ]
+
+        async def no_history(*_args, **_kwargs):
+            return
+            yield  # pylint: disable = unreachable
+
+        config = ChatDownloadConfig()
+        config.ids_to_retry = list(range(1, 451))
+        node = TaskNode(chat_id=8654123)
+        media_downloader.queue = asyncio.Queue()
+        with mock.patch("media_downloader.get_chat_history_v2", new=no_history):
+            app.loop.run_until_complete(
+                media_downloader.download_chat_task(Client(), config, node)
+            )
+
+        self.assertEqual(node.total_task, 450)
+        self.assertTrue(all(len(ids) <= 200 for ids in calls))
+        self.assertEqual(sorted(i for ids in calls for i in ids), list(range(1, 451)))

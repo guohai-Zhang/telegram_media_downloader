@@ -47,6 +47,8 @@ app = Application(CONFIG_NAME, DATA_FILE_NAME, APPLICATION_NAME)
 
 queue: asyncio.Queue = asyncio.Queue()
 RETRY_TIME_OUT = 3
+# max messages Telegram returns from one get_messages call
+RETRY_FETCH_BATCH = 200
 _run_tasks: List[asyncio.Task] = []
 
 logging.getLogger("pyrogram.session.session").addFilter(LogFilter())
@@ -562,12 +564,17 @@ async def download_chat_task(
 
     if chat_download_config.ids_to_retry:
         logger.info(f"{_t('Downloading files failed during last run')}...")
-        skipped_messages: list = await client.get_messages(  # type: ignore
-            chat_id=node.chat_id, message_ids=chat_download_config.ids_to_retry
-        )
+        retry_ids = list(chat_download_config.ids_to_retry)
+        # Telegram returns at most RETRY_FETCH_BATCH messages per call; the rest
+        # would be dropped, and the history loop skips retry ids, so fetch them all
+        for start in range(0, len(retry_ids), RETRY_FETCH_BATCH):
+            skipped_messages: list = await client.get_messages(  # type: ignore
+                chat_id=node.chat_id,
+                message_ids=retry_ids[start : start + RETRY_FETCH_BATCH],
+            )
 
-        for message in skipped_messages:
-            await add_download_task(message, node)
+            for message in skipped_messages:
+                await add_download_task(message, node)
 
     async for message in messages_iter:  # type: ignore
         meta_data = MetaData()
