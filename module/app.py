@@ -342,6 +342,18 @@ def get_config(config, key, default=None, val_type=str, verbose=True):
     return default
 
 
+def _dump_atomic(data: dict, path: str) -> None:
+    """Write YAML to `path` through a temp file next to it, then rename.
+
+    os.replace is atomic, so a crash or kill in the middle of a write leaves
+    the previous file intact instead of a truncated one.
+    """
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as yaml_file:
+        _yaml.dump(data, yaml_file)
+    os.replace(tmp_path, path)
+
+
 class Application:
     """Application load config and update config."""
 
@@ -879,6 +891,13 @@ class Application:
             self.app_data["chat"][idx]["ids_to_retry"] = value.ids_to_retry
             idx += 1
 
+        # Entries past idx belong to chats that are no longer configured (the
+        # GUI can shrink config["chat"]). Left in place, a stale entry for a
+        # chat that moved up would shadow the fresh one, because
+        # assign_app_data matches by chat_id and the last entry wins.
+        if self.app_data.get("chat"):
+            del self.app_data["chat"][idx:]
+
         self.config["save_path"] = self.save_path
         self.config["file_path_prefix"] = self.file_path_prefix
 
@@ -904,12 +923,8 @@ class Application:
         self.config["group_add_advertisement"] = self.group_add_advertisement
 
         if immediate:
-            with open(self.config_file, "w", encoding="utf-8") as yaml_file:
-                _yaml.dump(self.config, yaml_file)
-
-        if immediate:
-            with open(self.app_data_file, "w", encoding="utf-8") as yaml_file:
-                _yaml.dump(self.app_data, yaml_file)
+            _dump_atomic(self.config, self.config_file)
+            _dump_atomic(self.app_data, self.app_data_file)
 
     def set_language(self, language: Language):
         """Set Language"""
