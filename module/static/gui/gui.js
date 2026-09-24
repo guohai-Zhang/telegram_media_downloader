@@ -57,25 +57,26 @@ layui.use(['element', 'layer'], function () {
   }
 
   // Pure merge: builds the chat-list rows from the live dialog list and the
-  // saved config chats. A saved chat with a resolved dialog_id just marks
-  // that dialog row checked. A saved chat with dialog_id === null (the
-  // server couldn't match it, e.g. because its dialog cache wasn't filled
-  // yet, or it was saved by username) is matched here by id or normalized
-  // username against the dialog list; only truly unmatched saved chats
-  // become their own "extra" row.
+  // saved config chats. Every saved chat is matched against THIS `dialogs`
+  // array — by its resolved dialog_id, by its chat_id, or by normalized
+  // username — regardless of whether dialog_id is null (the server may
+  // have resolved dialog_id from its own cache even when this particular
+  // dialogs fetch failed and came back empty here). Only a saved chat that
+  // matches no dialog actually present in `dialogs` becomes its own
+  // "extra" row; that keeps a saved chat visible (and checked) instead of
+  // silently disappearing when the dialogs fetch fails or hasn't happened.
   function buildChatRows(dialogs, saved) {
     dialogs = dialogs || [];
     saved = saved || [];
     var checkedById = {};
     var extra = [];
     saved.forEach(function (c) {
-      if (c.dialog_id !== null && c.dialog_id !== undefined) {
-        checkedById[String(c.dialog_id)] = true;
-        return;
-      }
       var normKey = normalizeKey(c.chat_id);
+      var hasDialogId = c.dialog_id !== null && c.dialog_id !== undefined;
       var match = dialogs.filter(function (d) {
-        return String(d.id) === String(c.chat_id) || (d.username && normalizeKey(d.username) === normKey);
+        return (hasDialogId && String(d.id) === String(c.dialog_id)) ||
+          String(d.id) === String(c.chat_id) ||
+          (d.username && normalizeKey(d.username) === normKey);
       })[0];
       if (match) {
         checkedById[String(match.id)] = true;
@@ -305,6 +306,33 @@ layui.use(['element', 'layer'], function () {
   }
 
   var chatsLoadPromise = null;
+  var pendingRefresh = false;
+
+  // Dialogs first, then chats: current_chats() on the server matches saved
+  // chats against its dialog cache, which is empty until list_dialogs
+  // finishes. Fetching chats only after dialogs resolves avoids the race
+  // where every saved chat comes back with dialog_id: null and gets
+  // rendered as a duplicate "extra" row.
+  function startChatsLoad(refresh) {
+    var dialogsRequest = api('GET', 'api/dialogs' + (refresh ? '?refresh=1' : '')).then(
+      function (dialogs) { return dialogs; },
+      function () { return []; } // still show saved chats even if dialogs failed
+    );
+    var request = dialogsRequest.then(function (dialogs) {
+      return api('GET', 'api/chats').then(function (saved) {
+        chatRows = buildChatRows(dialogs, saved);
+        renderChats();
+      });
+    });
+    request.always(function () {
+      chatsLoadPromise = null;
+      if (pendingRefresh) {
+        pendingRefresh = false;
+        chatsLoadPromise = startChatsLoad(true);
+      }
+    });
+    return request;
+  }
 
   function loadChats(refresh) {
     if (!canListChats()) {
@@ -314,27 +342,16 @@ layui.use(['element', 'layer'], function () {
     // is about to render, so a second concurrent call (e.g. the tab-switch
     // and the status-refresh both wanting to load chats on first READY)
     // just piggybacks on it instead of firing another get_dialogs request.
+    // A refresh request (?refresh=1, from the 刷新列表 button) must not be
+    // swallowed this way though: it's queued and runs once the in-flight
+    // load finishes, instead of being dropped or run concurrently with it.
     if (chatsLoadPromise) {
+      if (refresh) {
+        pendingRefresh = true;
+      }
       return chatsLoadPromise;
     }
-    // Dialogs first, then chats: current_chats() on the server matches
-    // saved chats against its dialog cache, which is empty until
-    // list_dialogs finishes. Fetching chats only after dialogs resolves
-    // avoids the race where every saved chat comes back with dialog_id:
-    // null and gets rendered as a duplicate "extra" row.
-    var dialogsRequest = api('GET', 'api/dialogs' + (refresh ? '?refresh=1' : '')).then(
-      function (dialogs) { return dialogs; },
-      function () { return []; } // still show saved chats even if dialogs failed
-    );
-    chatsLoadPromise = dialogsRequest.then(function (dialogs) {
-      return api('GET', 'api/chats').then(function (saved) {
-        chatRows = buildChatRows(dialogs, saved);
-        renderChats();
-      });
-    });
-    chatsLoadPromise.always(function () {
-      chatsLoadPromise = null;
-    });
+    chatsLoadPromise = startChatsLoad(refresh);
     return chatsLoadPromise;
   }
 
