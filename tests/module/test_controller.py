@@ -896,3 +896,13 @@ class RequestThreadTestCase(ControllerTestBase):
         self.call_in_thread(self.controller.log_out)
         self.wait_for_state(State.LOGGED_OUT)
         self.assertEqual({id(loop) for loop in self.client.loops}, {id(self.loop)})
+
+
+class ProgressStatusTestCase(ControllerTestBase):
+    def test_status_reports_downloaded_files_separately(self):
+        self.ready_controller()
+        self.app.total_download_task = 7
+        progress = self.controller.status()["progress"]
+        self.assertEqual(progress["downloaded"], 7)
+        self.assertIn("total", progress)
+        self.assertIn("done", progress)

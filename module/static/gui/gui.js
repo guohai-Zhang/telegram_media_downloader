@@ -148,7 +148,7 @@ layui.use(['element', 'layer'], function () {
       text += ' · ' + (s.me.username ? '@' + s.me.username : s.me.name);
     }
     if (s.state === 'downloading') {
-      text += ' · 已完成 ' + s.progress.done + ' / ' + s.progress.total;
+      text += ' · 已处理 ' + s.progress.done + ' / ' + s.progress.total + ' 条消息' + ' · 已下载 ' + s.progress.downloaded + ' 个文件';
     }
     $('#gui_state').text(text);
     $('#gui_notice').text(s.error || s.notice || '').toggleClass('gui-error', !!s.error);

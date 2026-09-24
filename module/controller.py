@@ -239,6 +239,8 @@ class Controller:
                 "progress": {
                     "total": sum(c.node.total_task for c in configs),
                     "done": sum(c.finish_task for c in configs),
+                    # files actually downloaded; total/done count every message
+                    "downloaded": self._app.total_download_task,
                 },
             }
 
