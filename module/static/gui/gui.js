@@ -159,6 +159,15 @@ layui.use(['element', 'layer'], function () {
       .toggleClass('layui-btn-disabled', !enabled)
       .toggleClass('layui-btn-danger', s.state === 'downloading');
     $('#download_state').toggle(s.state === 'downloading');
+    if (s.state === 'downloading') {
+      // Follow the server's global pause state instead of the button's own
+      // last answer: after a stop while paused, the next run starts
+      // unpaused, and a stale "continue" would make every click a no-op.
+      // data-value is what index.html's click handler sends.
+      $('#download_state')
+        .text(s.paused ? '继续' : '暂停')
+        .attr('data-value', s.paused ? 'continue' : 'pause');
+    }
   }
 
   function renderAccount(s) {
@@ -407,6 +416,13 @@ layui.use(['element', 'layer'], function () {
       ? api('POST', 'api/download/stop')
       : api('POST', 'api/download/start').then(function () { switchTab('downloading'); });
     request.always(refreshStatus);
+  });
+
+  // index.html's inline handler has already switched the pause state with a
+  // synchronous request by now; re-render right away so the Chinese label
+  // replaces the English one it writes without waiting for the next poll.
+  $('#download_state').on('click', function () {
+    refreshStatus();
   });
 
   // ---- native helpers (only inside the app window)

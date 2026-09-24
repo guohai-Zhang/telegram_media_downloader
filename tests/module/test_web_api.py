@@ -100,7 +100,46 @@ class WebApiTestCase(unittest.TestCase):
         )
         res = self.client.get("/api/status", headers=self.headers)
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.get_json(), {"ok": True, "data": {"called": "status"}})
+        self.assertEqual(
+            res.get_json(),
+            {"ok": True, "data": {"called": "status", "paused": False}},
+        )
+
+    def test_status_reports_pause_state(self):
+        download_stat.set_download_state(download_stat.DownloadState.StopDownload)
+        res = self.client.get("/api/status", headers=self.headers)
+        self.assertIs(res.get_json()["data"]["paused"], True)
+        download_stat.set_download_state(download_stat.DownloadState.Downloading)
+        res = self.client.get("/api/status", headers=self.headers)
+        self.assertIs(res.get_json()["data"]["paused"], False)
+
+    def test_foreign_host_is_forbidden_in_gui_mode(self):
+        # DNS rebinding: a page on evil.example re-resolved to 127.0.0.1
+        evil = {"Host": "evil.example:5000", "X-Token": TOKEN}
+        for path in ("/", "/get_download_list?already_down=false", "/api/status"):
+            with self.subTest(path=path):
+                res = self.client.get(path, headers=evil)
+                self.assertEqual(res.status_code, 403)
+                self.assertEqual(res.get_json(), {"ok": False, "error": "forbidden"})
+        res = self.client.post("/api/download/start", headers=evil)
+        self.assertEqual(res.status_code, 403)
+        self.assertNotIn(("start_download",), self.controller.received)
+
+    def test_local_hosts_are_allowed_in_gui_mode(self):
+        self.assertEqual(self.client.get("/").status_code, 200)
+        for host in ("127.0.0.1:5000", "localhost:5123", "LOCALHOST", "127.0.0.1"):
+            with self.subTest(host=host):
+                headers = dict(self.headers, Host=host)
+                res = self.client.get("/api/status", headers=headers)
+                self.assertEqual(res.status_code, 200)
+
+    def test_host_is_not_checked_in_cli_mode(self):
+        web._gui["controller"] = None
+        res = self.client.get(
+            "/get_download_list?already_down=false",
+            headers={"Host": "evil.example:5000"},
+        )
+        self.assertEqual(res.status_code, 200)
 
     def test_non_ascii_token_is_forbidden_not_500(self):
         res = self.client.get("/api/status", headers={"X-Token": "tök"})

@@ -39,6 +39,8 @@ deAesCrypt = AesBase64("1234123412ABCDEF", "ABCDEF1234123412")
 
 # GUI mode state; stays empty when running as the CLI downloader
 _gui: Dict[str, Any] = {"controller": None, "token": "", "native": None}
+# the only Host names the GUI server answers to (it listens on 127.0.0.1)
+_GUI_HOSTS = ("127.0.0.1", "localhost")
 
 
 class User(UserMixin):
@@ -136,10 +138,17 @@ def _check_gui_token():
 
     A custom header forces a CORS preflight, so other web pages open in the
     user's browser cannot forge these requests against 127.0.0.1.
+
+    Before that, every GUI-mode request must name 127.0.0.1 or localhost as
+    its Host: a DNS-rebinding page (evil.example re-resolved to 127.0.0.1)
+    is same-origin with itself and could otherwise read the GET pages that
+    need no token, such as the download list.
     """
     is_api = request.path.startswith("/api/")
     if _gui["controller"] is None:
         return (jsonify({"ok": False, "error": "not found"}), 404) if is_api else None
+    if request.host.rsplit(":", 1)[0].lower() not in _GUI_HOSTS:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
     if is_api or request.method == "POST":
         given = request.headers.get("X-Token", "").encode("utf-8")
         if not hmac.compare_digest(given, _gui["token"].encode("utf-8")):
@@ -293,8 +302,10 @@ def get_download_list():
 @_flask_app.route("/api/status")
 @_api
 def api_status(controller):
-    """GUI state for the 1-second poll"""
-    return controller.status()
+    """GUI state for the 1-second poll, plus the global pause/continue state"""
+    data = dict(controller.status())
+    data["paused"] = get_download_state() is DownloadState.StopDownload
+    return data
 
 
 @_flask_app.route("/api/config", methods=["GET"])
