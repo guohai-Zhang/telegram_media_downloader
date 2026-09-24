@@ -118,12 +118,13 @@ def _alert(message: str) -> None:
 
 def _add_log_file(log_dir: str, level: Any) -> int:
     """Add the tdl.log sink (rotated like the CLI's) and return its loguru id."""
-    return logger.add(
+    sink_id: int = logger.add(
         os.path.join(log_dir, "tdl.log"),
         rotation=LOG_ROTATION,
         retention=LOG_RETENTION,
         level=level,
     )
+    return sink_id
 
 
 def main() -> int:
