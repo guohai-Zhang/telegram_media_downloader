@@ -80,7 +80,7 @@ The app is not notarized by Apple, so macOS blocks it the first time:
 
 ### Usage
 
-1. **Settings**: enter your api_id and api_hash (the page explains how to get them) and a proxy if Telegram is blocked where you are.
+1. **Settings**: api_id and api_hash default to Telegram Desktop's public credentials, which work but can get an account restricted — replace them with your own (the page explains how to get them) and a proxy if Telegram is blocked where you are.
 2. **Account**: phone number with country code → the code Telegram sends to your app → your two-step password if enabled.
 3. **Chats**: tick the channels or groups to download; add public ones you have not joined by pasting a `t.me/xxx` link. Save.
 4. Click "开始下载" (Start) and watch progress in "下载中" (Downloading).

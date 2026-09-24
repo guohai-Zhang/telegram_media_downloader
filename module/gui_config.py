@@ -21,6 +21,11 @@ _yaml_lock = threading.Lock()
 
 ChatId = Union[int, str]
 
+# Telegram Desktop's public credentials, used by the GUI until the user enters their
+# own; third-party use of them can get an account restricted (see the settings page)
+DEFAULT_API_ID = 2040
+DEFAULT_API_HASH = "b18441a1ff607e10a989891a5462e627"
+
 MAX_DOWNLOAD_TASK_MIN = 1
 MAX_DOWNLOAD_TASK_MAX = 10
 PROXY_SCHEMES = ("socks5", "http")
@@ -133,6 +138,21 @@ def ensure_data_file(path: str) -> Optional[str]:
         notice = f"下载记录文件损坏，已备份为 {_back_up(path)} 并重置"
     os.remove(path)
     return notice
+
+
+def fill_default_credentials(path: str) -> bool:
+    """Put the default api_id/api_hash into config.yaml when either is empty.
+
+    GUI only: the CLI still refuses to start without credentials. Returns True
+    when the file was changed.
+    """
+    data = _load(path)
+    if data.get("api_id") and data.get("api_hash"):
+        return False
+    data["api_id"] = DEFAULT_API_ID
+    data["api_hash"] = DEFAULT_API_HASH
+    _dump(path, data)
+    return True
 
 
 def _validate_proxy(raw: Any) -> Optional[Dict[str, Any]]:

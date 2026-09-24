@@ -14,7 +14,11 @@ from typing import IO, Any, Optional
 
 from loguru import logger
 
-from module.gui_config import ensure_config_file, ensure_data_file
+from module.gui_config import (
+    ensure_config_file,
+    ensure_data_file,
+    fill_default_credentials,
+)
 
 APP_DIR_NAME = "TelegramMediaDownloader"
 WINDOW_TITLE = "Telegram 下载器"
@@ -168,6 +172,7 @@ def _run(directory: str, log_dir: str, sink_id: int) -> int:
         ensure_data_file(os.path.join(directory, "data.yaml")),
     ]
     notice = "；".join(n for n in notices if n)
+    fill_default_credentials(config_path)
 
     # pylint: disable = import-outside-toplevel
     import webview

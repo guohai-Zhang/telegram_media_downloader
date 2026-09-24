@@ -11,10 +11,13 @@ from ruamel import yaml
 from module import gui_config
 from module.app import DEFAULT_MEDIA_TYPES, Application
 from module.gui_config import (
+    DEFAULT_API_HASH,
+    DEFAULT_API_ID,
     GuiError,
     InvalidState,
     ensure_config_file,
     ensure_data_file,
+    fill_default_credentials,
     find_chat,
     merge_chats,
     normalize_phone,
@@ -397,3 +400,29 @@ class GuiConfigTestCase(unittest.TestCase):
             with self.subTest(text=text):
                 with self.assertRaises(GuiError):
                     normalize_phone(text)
+
+
+class DefaultCredentialsTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.config_path = os.path.join(self.tmp, "config.yaml")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_fills_empty_credentials(self):
+        ensure_config_file(self.config_path, os.path.join(self.tmp, "dl"))
+        self.assertTrue(fill_default_credentials(self.config_path))
+        data = load_yaml(self.config_path)
+        self.assertEqual(data["api_id"], DEFAULT_API_ID)
+        self.assertEqual(data["api_hash"], DEFAULT_API_HASH)
+        self.assertFalse(fill_default_credentials(self.config_path))
+
+    def test_keeps_user_credentials(self):
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            f.write("# mine\napi_id: 12345\napi_hash: " + HASH + "\n")
+        self.assertFalse(fill_default_credentials(self.config_path))
+        with open(self.config_path, encoding="utf-8") as f:
+            self.assertEqual(
+                f.read(), "# mine\napi_id: 12345\napi_hash: " + HASH + "\n"
+            )
