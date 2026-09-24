@@ -328,19 +328,19 @@ GUI 模式下注册 `before_request`：所有 `/api/*` 请求和所有 POST 请�
 - `packaging/macos/tdl_gui.spec`：
   - 入口 `gui_main.py`，`console=False`，`BUNDLE(name="TelegramDownloader.app", bundle_identifier="io.github.guohai-zhang.telegram-media-downloader")`
   - `info_plist`：`LSMinimumSystemVersion=11.0`、`NSHighResolutionCapable=True`、`CFBundleShortVersionString=<utils.__version__>`
-  - `datas`：只包含 `module/templates`、`module/static`、`module/parsetab.py`、`module/parser.out`，**不包含 `config.yaml`、`data.yaml`、`sessions`**
+  - `datas`：只打包 `module/templates`、`module/static`，`module.parsetab` 通过 `hiddenimports` 编译进包里，**不包含 `config.yaml`、`data.yaml`、`sessions`**
 - `packaging/macos/icon.icns`：v1 由脚本从一张简单的 PNG 用 `iconutil` 生成
 - `packaging/macos/build.sh` + Makefile 目标 `mac-app`
 
 ### 构建步骤（`make mac-app`）
 
 1. 检查 `uname -m` 为 `arm64`。
-2. 用 `uv venv --python 3.11 build/venv-gui` 创建隔离环境，安装 `requirements-gui.txt`。
+2. 用 `uv venv --seed --python 3.11 --python-preference only-managed build/venv-gui` 创建隔离环境（uv 管理的 CPython 的 minos 是 11.0，Homebrew 的是 13.0），安装 `requirements-gui.txt`。
 3. 设 `export MACOSX_DEPLOYMENT_TARGET=11.0`（对源码编译的 C 扩展生效）。
 4. 运行 `python gen_filter_cache.py`，生成 ply 的 `parsetab.py` 和 `parser.out`。
 5. `pyinstaller packaging/macos/tdl_gui.spec --noconfirm`。
 6. ad-hoc 签名：`codesign --force --deep -s - dist/TelegramDownloader.app`，然后 `codesign --verify --deep --strict`。完全没签名的 arm64 应用，从网上下载后系统会提示"已损坏"，而且没有"仍要打开"的选项。
-7. 检查最低系统版本：对 app 里所有 Mach-O 文件执行 `otool -l`，确认 `minos` ≤ 11.0。有超出的就列出来并让构建失败。
+7. 检查最低系统版本：`packaging/macos/check_minos.py`，对 app 里所有 Mach-O 文件执行 `otool -l`，确认 `minos` ≤ 11.0。有超出的就列出来并让构建失败。
 8. 打包 `.dmg`：临时目录里放 `.app` 和一个指向 `/Applications` 的软链接，然后 `hdiutil create -format UDZO`。输出为 `dist/TelegramDownloader-<version>-arm64.dmg`。
 
 ### 版本号

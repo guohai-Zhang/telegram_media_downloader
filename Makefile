@@ -1,6 +1,6 @@
 TEST_ARTIFACTS ?= /tmp/coverage
 
-.PHONY: install dev_install static_type_check pylint style_check test
+.PHONY: install dev_install static_type_check pylint style_check test mac-app
 
 install:
 	python3 -m pip install --upgrade pip setuptools
@@ -24,3 +24,6 @@ test:
 		--cov-report html:${TEST_ARTIFACTS} \
 		--junit-xml=${TEST_ARTIFACTS}/media-downloader.xml \
 		tests/
+
+mac-app:
+	packaging/macos/build.sh
