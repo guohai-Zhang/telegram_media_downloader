@@ -72,7 +72,7 @@ Prefer not to use the terminal? Use the macOS app: configure, log in, pick chats
 The app is not notarized by Apple, so macOS blocks it the first time:
 
 - **macOS 14 and earlier**: right-click the app in Applications → Open → Open.
-- **macOS 15 and later**: double-click once, then go to System Settings → Privacy & Security, scroll down and click "Open Anyway".
+- **macOS 15 and later**: double-click once, then go to System Settings → Privacy & Security, scroll down, click "Open Anyway" and enter your login password.
 - If macOS says the app "is damaged": run this in Terminal, then open it again:
   ```sh
   xattr -dr com.apple.quarantine /Applications/TelegramDownloader.app
@@ -83,7 +83,11 @@ The app is not notarized by Apple, so macOS blocks it the first time:
 1. **Settings**: enter your api_id and api_hash (the page explains how to get them) and a proxy if Telegram is blocked where you are.
 2. **Account**: phone number with country code → the code Telegram sends to your app → your two-step password if enabled.
 3. **Chats**: tick the channels or groups to download; add public ones you have not joined by pasting a `t.me/xxx` link. Save.
-4. Click "开始下载" (Start). Stopping keeps your progress for next time.
+4. Click "开始下载" (Start) and watch progress in "下载中" (Downloading).
+   - "暂停" (Pause) keeps the connection to Telegram open; click "继续" (Continue) to carry on right away.
+   - "停止" (Stop) ends the run and saves progress; the next start resumes where it stopped.
+
+The footer shows a browser address ("浏览器访问") with a copy button: open it in a browser on the same Mac to use the same page there.
 
 Settings, login and logs live in `~/Library/Application Support/TelegramMediaDownloader/`. Downloads go to `~/Downloads/Telegram` by default. Build it yourself with `make mac-app`.
 

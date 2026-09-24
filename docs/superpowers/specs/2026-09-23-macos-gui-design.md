@@ -83,14 +83,14 @@
 | `module/templates/index.html` | 新增设置、账号、频道标签页，以及状态栏和页脚 | 无 |
 | `packaging/macos/`（新） | spec、构建脚本、图标 | PyInstaller |
 
-**依赖规则**：只有 `gui_main.py` 导入 `webview`，而且在 `main()` 函数内部延迟导入；`fcntl` 也在加锁的函数内部延迟导入（Windows 上没有这个模块）。`controller.py` 和 `web.py` 都不导入这两个模块，保证 Ubuntu 和 Windows 的 CI 能正常导入 `gui_main` 中的纯函数并测试。
+**依赖规则**：只有 `gui_main.py` 导入 `webview`，而且在函数内部（`_run()`、`NativeActions.choose_folder()`）延迟导入；`fcntl` 也在加锁的函数内部延迟导入（Windows 上没有这个模块）。`controller.py` 和 `web.py` 都不导入这两个模块，保证 Ubuntu 和 Windows 的 CI 能正常导入 `gui_main` 中的纯函数并测试。
 
 ## 5. 启动与数据目录
 
 `gui_main.py` 启动顺序：
 
 1. **数据目录**：`~/Library/Application Support/TelegramMediaDownloader/`，不存在就创建，然后 `os.chdir()` 进去。现有的 `config.yaml`、`data.yaml`、`sessions/`、`log/`、`temp/` 路径都基于 `os.path.abspath(".")`（`module/app.py:376-392`），`chdir` 之后不用改。从 Finder 启动时工作目录是 `/`，不 `chdir` 会因为没有写权限而崩溃。
-2. **单实例锁**：对 `<数据目录>/.lock` 加 `fcntl.flock(LOCK_EX | LOCK_NB)`。加锁失败说明已有实例在运行，弹出原生提示后退出。这样可以避免两个进程同时打开同一个 SQLite session 文件。
+2. **单实例锁**：对 `<数据目录>/.lock` 加 `fcntl.flock(LOCK_EX | LOCK_NB)`。加锁失败说明已有实例在运行，弹出原生提示后退出。这样可以避免两个进程同时打开同一个 SQLite session 文件。加锁成功后，**后面的所有步骤都包在一个 `try/except Exception` 里**：任何异常都用 `logger.exception` 写进 `tdl.log`，弹出原生提示"启动失败：<异常类名>，日志在 <日志目录>"（15 秒后自动消失），释放锁，退出码为 1。否则窗口打开前的错误（例如 `language: 1`、`chat: [-100123]` 这类类型不对的配置值）会让应用每次一打开就静默退出。原生提示用 `osascript -e 'on run argv' … <标题> <内容>` 把文字作为参数传给 AppleScript，不拼进脚本，因为内容里会有路径和异常名。
 3. **默认配置**：如果 `config.yaml` 不存在，写入：
    ```yaml
    api_id: ''
@@ -101,24 +101,30 @@
    save_path: <~/Downloads/Telegram 的绝对路径>
    file_path_prefix: [chat_title, media_datetime]
    ```
+   `config.yaml` 为空或损坏时的处理见第 11 节。同时检查 `data.yaml`（`gui_config.ensure_data_file`）：解析失败或不是映射时，备份为 `data.yaml.broken-<时间戳>` 后删除（空文件直接删除，不备份），应用以没有重试记录的状态启动。两个文件的提示都通过 `controller.set_notice()` 显示，同时出现时用"；"连接。
 4. **加载配置**：`app.load_config()`。`assign_config` 改为用 `.get()` 读取 `api_id`、`api_hash`、`media_types`、`file_formats`，缺少时使用默认值（现在直接用下标读，缺字段会抛 KeyError，见 `module/app.py:447-452`）。CLI 的 `_check_config()` 另外显式检查 api_id 和 api_hash 不能为空，为空就报出明确的错误信息并返回 False，保持 CLI 现在"缺少凭证就不启动"的行为。
-5. **日志**：写到 `<数据目录>/log/tdl.log`，沿用现有的 loguru 配置。
+5. **日志**：写到 `<数据目录>/log/tdl.log`（`rotation="10 MB"`、`retention="10 days"`，与 CLI 相同）。这个 sink 在第 2 步加锁成功后**立刻**添加（先创建 `log/` 目录），级别为 INFO，这样加载配置时出的错也能记下来。加载配置后，如果 `log_level` 不是 INFO，先按配置的级别再加一个 sink，然后移除早先的 INFO sink，不会重复写两份。
 6. **事件循环线程**：`threading.Thread(target=app.loop.run_forever, daemon=True)`。
 7. **Web 线程**：用 `werkzeug.serving.make_server("127.0.0.1", port, flask_app)` 启动。`port` 先尝试 `app.web_port`（默认 5000）；如果绑定失败（macOS 12 起，隔空播放接收器默认占用 5000 端口），就用端口 0，由系统分配。实际端口从 `server.server_port` 读取。
 8. **token**：`secrets.token_urlsafe(16)`，每次启动生成一个新的。
 9. **controller 初始化**：如果 api 凭证已经填写，就在后台自动连接（有 session 文件则直接进入 READY）。
-10. **窗口**：`webview.create_window("Telegram 下载器", f"http://127.0.0.1:{port}/?token={token}", js_api=GuiApi(), width=1000, height=720)`，然后 `webview.start()`。
+10. **窗口**：`webview.create_window("Telegram 下载器", f"http://127.0.0.1:{port}/?token={token}", width=1000, height=720, min_size=(760, 520))`，**不传 `js_api`**；然后 `native.attach(window)`，`webview.start()`。
 
 ### 关窗处理
 
-- 注册 `window.events.closing`。如果当前状态是 DOWNLOADING，就弹出原生确认框："正在下载，退出后进度会保存，下次可以继续。确定退出？"。用户选择取消时返回 False，阻止关闭。
-- 确认关闭后调用 `controller.shutdown(timeout=10)`：停止下载 → `app.update_config()` → 断开客户端 → 停止 web 服务 → `app.loop.stop()`。
+- 给 `window.events.closing` 注册一个**同步**处理函数。pywebview（固定为 6.2.1）在主线程上同步调用它：窗口的关闭按钮，以及经 `applicationShouldTerminate_` → `should_close` 的退出（菜单、Dock 的退出、注销）都会走到这里，所以可以在里面弹模态框。
+- 如果当前状态是 DOWNLOADING，就用 `BrowserView.display_confirmation_dialog`（NSAlert）弹出原生确认框："正在下载，退出后进度会保存，下次可以继续。确定退出吗？"（按钮"退出"/"取消"）。用户选择取消时返回 False，阻止关闭。`window.confirm_close` 保持默认的 False，不用 pywebview 自带的退出确认，也不轮询。
+- 允许关闭时执行 `cleanup()`：`controller.shutdown(timeout=10)`（停止下载 → `app.update_config()` → 断开客户端）→ 停止 web 服务 → `app.loop.stop()`。每一步单独捕获异常并记录警告。
+- `cleanup()` 是幂等的：`webview.start()` 返回后（放在 `finally` 里）会再调用一次。按 Cmd+Q 时 `WebKitHost.keyDown_` 直接调用 `app.stop_`，不经过 `closing`，只有这一次调用能覆盖到；已经执行过时什么也不做。
 
-### `GuiApi`（pywebview `js_api`）
+### `NativeActions`（不暴露给页面 JS）
 
-- `choose_folder() -> str | None`：弹出原生文件夹选择框。
-- `open_log_folder()`：用 Finder 打开 `<数据目录>/log`。
-- 在浏览器里访问时 `window.pywebview` 不存在，页面对应改为手动输入路径，并隐藏"打开日志文件夹"按钮。
+- 不使用 pywebview 的 `js_api`：它的 JS 桥用普通的 `getattr` 解析任意带点的属性路径，连 `_window` 这样的"私有"属性也能从页面访问到，进而访问整个 Python 对象图。
+- `gui_main.NativeActions` 提供两个方法，通过 `register_gui(controller, token, native=native)` 交给 web 层：
+  - `choose_folder() -> str | None`：`window.create_file_dialog(FOLDER)` 弹出原生文件夹选择框（Flask 请求线程可以直接调用，pywebview 内部会转到主线程）。
+  - `open_log_folder()`：用 Finder 打开 `<数据目录>/log`。
+- 页面通过普通的、带 token 的路由调用它们：`POST /api/native/choose_folder`、`POST /api/native/open_log_folder`。没有注册 native（浏览器访问的普通 web 服务、测试）时，这两个路由返回 404 `仅在应用窗口中可用`。
+- `index.html` 在 `<body data-native="1|0">` 上标明有没有 native。为 1 时页面显示[选择…]和[打开日志文件夹]；为 0 时改为手动输入保存目录，并隐藏"打开日志文件夹"按钮。
 
 ## 6. Controller 状态机
 
@@ -215,7 +221,9 @@ READY ──log_out()──▶ LOGGED_OUT
 3. 重建模块级的 `queue = asyncio.Queue()`（现在是导入时创建的，`media_downloader.py:48`），`app.is_running = True`。
 4. `set_max_concurrent_transmissions(client, app.max_concurrent_transmissions)`：现在 CLI 只在创建客户端后调用一次（`media_downloader.py:665`）。GUI 的客户端是常驻的，所以每次开始下载都要重新调用，这样改过的并发数在下次"开始"时生效。它会重建 `asyncio.Semaphore`，在事件循环内调用也避免了信号量跨事件循环的问题。
 5. 创建任务：`download_all_chat(client)` + `app.max_download_task` 个 `worker(client)`。任务句柄保存在模块级的 `_run_tasks` 里。
-6. 返回一个 `wait_until_finished()` 协程：等价于现在的 `run_until_all_task_finish()`（所有频道 `need_check` 为真，且 `total_task == finish_task`）。它完成后，controller 在事件循环里直接调用 `media_downloader.stop_download()` 收尾（不经过 controller 的公开方法 `stop_download()`，因为后者会做状态校验），然后把状态切回 READY，附带"已完成，共下载 N 个文件"。
+6. `start_download` 创建完任务就返回，**不返回任何东西**。等待完成用单独的 `wait_until_finished()`：`app.is_running` 为真、且还没全部完成（所有频道 `need_check` 为真，且 `total_task == finish_task`）时每秒检查一次，不考虑 bot 模式。controller 在 `start_download` 之后启动 `_watch_until_finished()`，它等 `wait_until_finished()` 返回后，如果状态仍是 DOWNLOADING，就切到 STOPPING 并开始收尾。
+   - 所有停止路径（用户点"停止"、自然完成、关窗时的 `shutdown`）都共用**同一个被跟踪的 stop future**（`_stop_future`，运行 `_finish_run`）：它调用 `media_downloader.stop_download()`，成功后切回 READY 并设置提示（自然完成是"下载完成，本次共下载 N 个文件"，停止是"已停止，下次开始会从中断处继续"），失败则进入 ERROR。各条路径不会各自重复调用 `stop_download()`。
+   - controller 的 `stop_download()` 最多等 `STOP_WAIT`（30 秒）：超时就返回 409"仍在停止，请稍候"，状态保持 STOPPING，直到收尾完成。`shutdown(timeout)` 先等同一个 future，再断开客户端。
 
 ### `stop_download()`（新，在 `app.loop` 中执行）
 
@@ -237,11 +245,13 @@ READY ──log_out()──▶ LOGGED_OUT
 
 GUI 模式下注册 `before_request`：所有 `/api/*` 请求和所有 POST 请求都必须带请求头 `X-Token: <token>`，否则返回 403。页面 JS 从 URL 的 `?token=` 中读取 token，存进 `sessionStorage`，之后每个请求都带上这个请求头。带自定义请求头的跨站请求会触发 CORS 预检，服务端不返回 CORS 头，恶意网页的请求就发不出来。现有 GET 进度接口不需要 token：跨站网页能发起请求，但读不到响应内容。CLI 模式下不注册 `/api/*`，现有行为不变。
 
+**Host 检查**：GUI 模式下，**所有**请求（不只是 `/api/*`）在 token 校验之前先检查 `Host`：去掉端口后必须是 `127.0.0.1` 或 `localhost`，否则返回 403 `{"ok": false, "error": "forbidden"}`。这是为了防 DNS rebinding：恶意域名重新解析到 127.0.0.1 之后，它的页面和自己同源，能读到不需要 token 的 GET 接口（比如下载列表）。CLI 模式不做这个检查。
+
 ### 路由
 
 | 方法 路径 | 请求体 | 调用 |
 |---|---|---|
-| `GET /api/status` | 无 | `status()` |
+| `GET /api/status` | 无 | `status()`，web 层再加上 `paused`：`get_download_state() is DownloadState.StopDownload`（全局的暂停状态） |
 | `GET /api/config` | 无 | `get_config()` |
 | `POST /api/config` | 见下文 | `save_config()` |
 | `POST /api/retry` | 无 | `retry()` |
@@ -255,8 +265,10 @@ GUI 模式下注册 `before_request`：所有 `/api/*` 请求和所有 POST 请�
 | `POST /api/chats` | `{chat_ids: [...]}` | `save_chats()` |
 | `POST /api/download/start` | 无 | `start_download()` |
 | `POST /api/download/stop` | 无 | `stop_download()` |
+| `POST /api/native/choose_folder` | 无 | `NativeActions.choose_folder()` → 选中的路径或 null；没有 native 时 404 `仅在应用窗口中可用` |
+| `POST /api/native/open_log_folder` | 无 | `NativeActions.open_log_folder()`；没有 native 时 404 `仅在应用窗口中可用` |
 
-返回格式：成功 `{"ok": true, "data": ...}`；失败 `{"ok": false, "error": "<中文提示>"}`，状态码 400（参数错误）、409（当前状态不允许）或 500。
+返回格式：成功 `{"ok": true, "data": ...}`；失败 `{"ok": false, "error": "<中文提示>"}`，状态码 400（参数错误）、403（Host 或 token 不对）、404（没有 native）、409（当前状态不允许）或 500。
 
 ### 保存配置 `POST /api/config`
 
@@ -288,8 +300,9 @@ GUI 模式下注册 `before_request`：所有 `/api/*` 请求和所有 POST 请�
 
 ### 保存频道 `POST /api/chats`
 
-1. 用 ruamel 读取 `config.yaml`，按提交的 `chat_ids` 顺序重建 `chat` 列表。已有的频道原样保留整个条目（包括 `last_read_message_id`、`download_filter` 等），新增的频道写成 `{chat_id: <数字 id>, last_read_message_id: 0}`。
-2. 写回，然后执行 `app.load_config()` 整体重建。`update_config()` 是按下标把 `chat_download_config` 对应回 `config["chat"]` 的（`module/app.py:855-863`），整体重建才能保证下标一致。`data.yaml` 按 `chat_id` 对应，不受影响。
+1. 先去掉重复的 id：按 `str(id).strip().lstrip("@").lower()` 比较，保留第一次出现的，顺序不变。然后用 ruamel 读取 `config.yaml`，按提交的 `chat_ids` 顺序重建 `chat` 列表。已有的频道原样保留整个条目（包括 `last_read_message_id`、`download_filter` 等），新增的频道写成 `{chat_id: <数字 id>, last_read_message_id: 0}`。同一个频道的数字 id 和用户名都出现时，只保留一个条目。
+   - **例外**：只通过粘贴链接解析到（在 `resolve_chat` 的结果里，但不在当前的对话列表里）、而且有用户名的新频道，写成 `{chat_id: <用户名，不带 @>, last_read_message_id: 0}`。没加入的公开频道，数字 id 要靠 session 的 peer 缓存才能解析，退出登录再登录后缓存就没了，按数字 id 会什么也下载不到。`current_chats()` 和 `find_chat()` 本来就能按用户名匹配。
+2. 写回，然后执行 `app.load_config()` 整体重建。`update_config()` 是按下标把 `chat_download_config` 对应回 `config["chat"]` 的（`module/app.py` 的 `update_config`），整体重建才能保证下标一致。`data.yaml` 的 `chat` 列表也是 `update_config()` 按同样的下标写回的，读取时（`assign_app_data`）按 `chat_id` 匹配，同一个 `chat_id` 出现多次时以最后一条为准。所以频道变少后，`update_config()` 写完之后会截掉多出来的旧条目（`del app_data["chat"][idx:]`）；否则前移的频道会被它自己的旧条目覆盖，下次启动时重试列表是旧的，中断的消息再也不会下载。`config.yaml` 和 `data.yaml` 都通过同目录的临时文件 + `os.replace` 原子写入，写到一半被中断也不会留下截断的文件。
 3. 已有频道判断是否相同时，同时比较数字 id 和用户名（旧配置里可能写的是用户名）。
 
 ## 9. 界面
@@ -307,7 +320,7 @@ GUI 模式下注册 `before_request`：所有 `/api/*` 请求和所有 POST 请�
 └────────────────────────────────────────────────────────┘
 ```
 
-- **状态栏**：显示状态文字和已登录的用户。主按钮在 READY 时为"开始"，在 DOWNLOADING 时为"停止"，其他状态下禁用。暂停/继续按钮只在下载中显示。每秒轮询一次 `/api/status`。
+- **状态栏**：显示状态文字和已登录的用户。主按钮在 READY 时为"开始"，在 DOWNLOADING 时为"停止"，其他状态下禁用。暂停/继续按钮只在下载中显示，文字和 `data-value` 跟随 `/api/status` 的 `paused`（暂停中显示"继续"，否则显示"暂停"），这样暂停时点"停止"、下次再开始后按钮不会卡在"继续"。每秒轮询一次 `/api/status`。
 - **设置**：
   - api_id、api_hash，下面附"如何获取"的折叠说明：登录 my.telegram.org → API development tools → 创建应用 → 复制 api_id 和 api_hash
   - 代理：无 / SOCKS5 / HTTP，以及地址、端口，可选账号和密码
@@ -372,6 +385,9 @@ GUI 模式下注册 `before_request`：所有 `/api/*` 请求和所有 POST 请�
 | 登录各类错误 | 按第 6 节映射为中文提示 |
 | 保存目录不可写 | 拒绝保存，提示原因 |
 | 配置文件损坏（YAML 解析失败） | 启动时把它备份为 `config.yaml.broken-<时间戳>`，写入默认配置，并在页面上提示一次 |
+| 下载记录文件 `data.yaml` 损坏（解析失败或不是映射） | 启动时备份为 `data.yaml.broken-<时间戳>` 并删除（空文件直接删除，不备份），以没有重试记录的状态启动，页面提示"下载记录文件损坏，已备份为 … 并重置"；和配置文件的提示同时出现时合并成一条 |
+| 启动提示和"登录已失效"提示的清除 | 用户手动登录成功（验证码、两步验证）或保存设置、重试后自动登录成功时清除；启动时用已有 session 自动登录不清除，否则启动提示还没被看到就没了；开始下载时也会清除 |
+| 窗口打开前启动失败（加载配置等任何异常） | 写入 `tdl.log`（含 traceback），弹原生提示"启动失败：<异常类名>，日志在 <日志目录>"（15 秒后自动消失），释放锁，退出码 1 |
 | controller 未预期的异常 | → ERROR，写日志，页面提供[打开日志文件夹] |
 | 第二个实例 | 文件锁冲突 → 弹出提示后退出 |
 | 下载中关窗 | 弹原生确认框；确认后 `shutdown(10)`，保存进度 |
