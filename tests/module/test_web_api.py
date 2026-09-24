@@ -65,6 +65,18 @@ class FakeController:
         self._call("stop_download")
 
 
+class FakeNative:
+    def __init__(self):
+        self.calls = []
+
+    def choose_folder(self):
+        self.calls.append("choose_folder")
+        return "/tmp/chosen"
+
+    def open_log_folder(self):
+        self.calls.append("open_log_folder")
+
+
 class WebApiTestCase(unittest.TestCase):
     def setUp(self):
         download_stat.reset_download_stat()
@@ -77,6 +89,7 @@ class WebApiTestCase(unittest.TestCase):
     def tearDown(self):
         web._gui["controller"] = None
         web._gui["token"] = ""
+        web._gui["native"] = None
         web.get_flask_app().config["LOGIN_DISABLED"] = self.login_disabled
         download_stat.reset_download_stat()
 
@@ -207,3 +220,25 @@ class WebApiTestCase(unittest.TestCase):
         web.get_flask_app().config["LOGIN_DISABLED"] = True
         res = self.client.get("/")
         self.assertNotIn(b"static/gui/gui.js", res.data)
+
+    def test_index_renders_native_mode_flag(self):
+        res = self.client.get("/")
+        self.assertIn(b'data-native="0"', res.data)
+        web.register_gui(self.controller, TOKEN, native=FakeNative())
+        res = self.client.get("/")
+        self.assertIn(b'data-native="1"', res.data)
+
+    def test_native_routes_404_without_native(self):
+        for path in ("choose_folder", "open_log_folder"):
+            res = self.client.post(f"/api/native/{path}", headers=self.headers)
+            self.assertEqual(res.status_code, 404)
+            self.assertEqual(res.get_json(), {"ok": False, "error": "仅在应用窗口中可用"})
+
+    def test_native_routes_forward_to_native_object(self):
+        native = FakeNative()
+        web.register_gui(self.controller, TOKEN, native=native)
+        res = self.client.post("/api/native/choose_folder", headers=self.headers)
+        self.assertEqual(res.get_json(), {"ok": True, "data": "/tmp/chosen"})
+        res = self.client.post("/api/native/open_log_folder", headers=self.headers)
+        self.assertEqual(res.get_json(), {"ok": True, "data": None})
+        self.assertEqual(native.calls, ["choose_folder", "open_log_folder"])

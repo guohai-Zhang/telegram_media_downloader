@@ -410,24 +410,25 @@ layui.use(['element', 'layer'], function () {
   });
 
   // ---- native helpers (only inside the app window)
+  //
+  // There is no window.pywebview.api bridge any more (removed as a security
+  // fix: it let page JS reach arbitrary Python objects). The two native
+  // actions are plain token-guarded HTTP routes instead; the server tells
+  // us whether they are backed by a real window via data-native on <body>.
 
-  function enableNativeButtons() {
-    if (window.pywebview && window.pywebview.api) {
-      $('body').addClass('has-pywebview');
-    }
+  if (document.body.getAttribute('data-native') === '1') {
+    $('body').addClass('has-pywebview');
   }
-  window.addEventListener('pywebviewready', enableNativeButtons);
-  enableNativeButtons();
 
   $('#btn_choose_folder').on('click', function () {
-    window.pywebview.api.choose_folder().then(function (path) {
+    api('POST', 'api/native/choose_folder').then(function (path) {
       if (path) {
         $('#settings_form [name=save_path]').val(path);
       }
     });
   });
   $('.gui-open-log').on('click', function () {
-    window.pywebview.api.open_log_folder();
+    api('POST', 'api/native/open_log_folder');
   });
 
   // ---- browser address

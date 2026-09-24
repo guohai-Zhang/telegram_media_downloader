@@ -16,11 +16,7 @@ from module.gui_config import ensure_config_file
 
 APP_DIR_NAME = "TelegramMediaDownloader"
 WINDOW_TITLE = "Telegram 下载器"
-CLOSE_CONFIRM = {
-    "global.quitConfirmation": "正在下载，退出后进度会保存，下次可以继续。确定退出吗？",
-    "global.quit": "退出",
-    "global.cancel": "取消",
-}
+QUIT_CONFIRM_MESSAGE = "正在下载，退出后进度会保存，下次可以继续。确定退出吗？"
 
 
 def _home(home: Optional[str] = None) -> str:
@@ -61,15 +57,25 @@ def ensure_std_streams() -> None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")  # pylint: disable = R1732
 
 
-class GuiApi:
-    """Exposed to the page as window.pywebview.api.* (public methods only)."""
+class NativeActions:
+    """Backs the /api/native/* routes (module.web); never exposed to page JS.
+
+    Earlier this was a pywebview js_api object (window.pywebview.api.*), but
+    pywebview's JS bridge resolves any dotted attribute path with plain
+    getattr - even a "private" `_window` attribute is reachable from the
+    page, and through it the whole Python object graph (e.g.
+    `_window.gui.os.system`). Removing js_api entirely and driving these two
+    native actions through ordinary token-guarded Flask routes closes that
+    hole; a Flask request thread can safely call pywebview APIs like
+    `create_file_dialog`, which round-trip to the main thread internally.
+    """
 
     def __init__(self, log_dir: str):
         self._log_dir = log_dir
         self._window: Any = None
 
     def attach(self, window: Any) -> None:
-        """Set after the window exists; private so pywebview does not expose it."""
+        """Set once the window exists."""
         self._window = window
 
     def choose_folder(self) -> Optional[str]:
@@ -101,18 +107,6 @@ def _alert(message: str) -> None:
     )
 
 
-def _sync_confirm_close(window: Any, controller: Any, stop: threading.Event) -> None:
-    """Ask before closing only while downloading.
-
-    pywebview reads window.confirm_close when the user closes the window. A
-    dialog opened from the `closing` handler would deadlock the main thread.
-    """
-    from module.controller import State  # pylint: disable = import-outside-toplevel
-
-    while not stop.wait(0.5):
-        window.confirm_close = controller.state is State.DOWNLOADING
-
-
 # pylint: disable = R0914
 def main() -> int:
     """Start the loop, web server and window; clean up when the window closes."""
@@ -134,7 +128,7 @@ def main() -> int:
     from loguru import logger
 
     import media_downloader
-    from module.controller import CONNECT_TIMEOUT, Controller
+    from module.controller import CONNECT_TIMEOUT, Controller, State
     from module.pyrogram_extension import HookClient
     from module.web import make_web_server, register_gui
 
@@ -171,40 +165,85 @@ def main() -> int:
     if notice:
         controller.set_notice(notice)
 
+    native = NativeActions(app.log_file_path)
     token = os.environ.get("TDL_GUI_TOKEN") or secrets.token_urlsafe(16)
-    register_gui(controller, token)
+    register_gui(controller, token, native=native)
     server, port = make_web_server("127.0.0.1", app.web_port)
     threading.Thread(target=server.serve_forever, daemon=True, name="web").start()
     logger.info(f"GUI web server listening on 127.0.0.1:{port}")
     controller.start()
 
-    gui_api = GuiApi(app.log_file_path)
     window = webview.create_window(
         WINDOW_TITLE,
         f"http://127.0.0.1:{port}/?token={token}",
-        js_api=gui_api,
         width=1000,
         height=720,
         min_size=(760, 520),
     )
-    gui_api.attach(window)
-    stop_sync = threading.Event()
-    threading.Thread(
-        target=_sync_confirm_close,
-        args=(window, controller, stop_sync),
-        daemon=True,
-        name="confirm-close",
-    ).start()
+    native.attach(window)
 
-    webview.start(localization=CLOSE_CONFIRM)
+    cleanup_done = threading.Event()
 
-    # the window is closed
-    stop_sync.set()
-    controller.shutdown(timeout=10)
-    server.shutdown()
-    app.loop.call_soon_threadsafe(app.loop.stop)
+    def cleanup() -> None:
+        """Save progress and disconnect; idempotent so it can run twice.
+
+        Called from `on_closing` (window close button, menu/Dock Quit,
+        logout - everything that goes through `should_close`) and again
+        after `webview.start()` returns unconditionally, which is the only
+        place that also catches Cmd+Q handled directly by
+        `WebKitHost.keyDown_` (-> `app.stop_`), a path that bypasses
+        `should_close`/`events.closing` entirely.
+        """
+        if cleanup_done.is_set():
+            return
+        cleanup_done.set()
+        try:
+            controller.shutdown(timeout=10)
+        except Exception as e:  # pylint: disable = broad-except
+            logger.warning(f"cleanup: controller.shutdown failed: {e}")
+        try:
+            server.shutdown()
+            server.server_close()
+        except Exception as e:  # pylint: disable = broad-except
+            logger.warning(f"cleanup: web server did not stop cleanly: {e}")
+        try:
+            app.loop.call_soon_threadsafe(app.loop.stop)
+        except Exception as e:  # pylint: disable = broad-except
+            logger.warning(f"cleanup: asyncio loop did not stop cleanly: {e}")
+        logger.info("GUI stopped")
+
+    def on_closing() -> bool:
+        """window.events.closing handler.
+
+        pywebview runs `closing` handlers synchronously on the main thread
+        for both the window's close button and an app-level quit routed
+        through `applicationShouldTerminate_` -> `should_close`, so a modal
+        confirmation dialog here is safe (pywebview is pinned at 6.2.1;
+        this relies on that internal behavior). `window.confirm_close` is
+        left at its default False so pywebview's own post-`closing`
+        confirmation (driven by the `global.quitConfirmation`
+        localization) never fires a second dialog.
+        """
+        if controller.state is State.DOWNLOADING:
+            # pylint: disable = import-outside-toplevel
+            from webview.platforms.cocoa import BrowserView
+
+            confirmed = BrowserView.display_confirmation_dialog(
+                "退出", "取消", QUIT_CONFIRM_MESSAGE
+            )
+            if not confirmed:
+                return False
+        cleanup()
+        return True
+
+    window.events.closing += on_closing
+
+    webview.start()
+
+    # webview.start() can also return via the keyDown_ -> app.stop_ path,
+    # which never runs on_closing; cleanup() is a no-op if it already ran.
+    cleanup()
     lock.close()
-    logger.info("GUI stopped")
     return 0
 
 

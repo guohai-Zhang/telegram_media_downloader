@@ -38,7 +38,7 @@ web_login_users: dict = {}
 deAesCrypt = AesBase64("1234123412ABCDEF", "ABCDEF1234123412")
 
 # GUI mode state; stays empty when running as the CLI downloader
-_gui: Dict[str, Any] = {"controller": None, "token": ""}
+_gui: Dict[str, Any] = {"controller": None, "token": "", "native": None}
 
 
 class User(UserMixin):
@@ -103,10 +103,17 @@ def init_web(app: Application):
         ).start()
 
 
-def register_gui(controller: Any, token: str) -> None:
-    """Enable GUI mode: expose /api/* backed by `controller` and guarded by `token`."""
+def register_gui(controller: Any, token: str, native: Any = None) -> None:
+    """Enable GUI mode: expose /api/* backed by `controller` and guarded by `token`.
+
+    `native` is optional: it backs the /api/native/* routes (folder picker,
+    reveal-in-Finder) that only make sense when a real app window exists.
+    When it is not passed (or is None, e.g. the plain web/CLI server), those
+    routes answer 404 instead of doing anything.
+    """
     _gui["controller"] = controller
     _gui["token"] = token
+    _gui["native"] = native
     _flask_app.config["LOGIN_DISABLED"] = True
 
 
@@ -212,6 +219,7 @@ def index():
             "pause" if get_download_state() is DownloadState.Downloading else "continue"
         ),
         gui_mode=_gui["controller"] is not None,
+        native_mode=_gui.get("native") is not None,
     )
 
 
@@ -378,3 +386,29 @@ def api_download_start(controller):
 def api_download_stop(controller):
     """Stop downloading"""
     controller.stop_download()
+
+
+def _native() -> Any:
+    """The registered native-actions object, or a 404 if there is none.
+
+    Only the real app window registers one (see gui_main.NativeActions); the
+    plain browser/CLI server and the web API tests leave it unset.
+    """
+    native = _gui.get("native")
+    if native is None:
+        raise GuiError("仅在应用窗口中可用", status=404)
+    return native
+
+
+@_flask_app.route("/api/native/choose_folder", methods=["POST"])
+@_api
+def api_choose_folder(_controller):
+    """Native folder picker for the save path"""
+    return _native().choose_folder()
+
+
+@_flask_app.route("/api/native/open_log_folder", methods=["POST"])
+@_api
+def api_open_log_folder(_controller):
+    """Reveal the log folder in Finder so users can send logs"""
+    _native().open_log_folder()

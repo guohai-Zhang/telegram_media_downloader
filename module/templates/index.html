@@ -17,7 +17,7 @@
   </style>
 </head>
 
-<body>
+<body data-native="{{ 1 if native_mode else 0 }}">
   {% if gui_mode %}
   <div class="gui-bar">
     <span id="gui_state">正在加载…</span>
