@@ -271,26 +271,48 @@ def _norm(value: Any) -> str:
     return str(value).strip().lstrip("@").lower()
 
 
+def unique_chat_ids(chat_ids: List[ChatId]) -> List[ChatId]:
+    """Drop repeated chat ids (compared like `_norm`), keeping the first, in order."""
+    seen = set()
+    result: List[ChatId] = []
+    for chat_id in chat_ids:
+        key = _norm(chat_id)
+        if key not in seen:
+            seen.add(key)
+            result.append(chat_id)
+    return result
+
+
 def merge_chats(
-    existing: List[Any], chat_ids: List[ChatId], usernames: Dict[ChatId, str]
+    existing: List[Any],
+    chat_ids: List[ChatId],
+    usernames: Dict[ChatId, str],
+    new_ids: Optional[Dict[ChatId, ChatId]] = None,
 ) -> List[Any]:
     """Rebuild config['chat'] in `chat_ids` order, keeping matching entries intact.
 
     An existing entry matches by chat id or, for configs written with usernames,
-    by the chat's username. New chats start from the first message.
+    by the chat's username. New chats start from the first message and are
+    written with `new_ids[chat_id]` as their chat_id when given, else the id.
+    An id naming a chat that is already in the result (by its other id or
+    username) is skipped, so no chat is listed twice.
     """
+    new_ids = new_ids or {}
     remaining = list(existing)
     result: List[Any] = []
     for chat_id in chat_ids:
         wanted = {_norm(chat_id)}
         if usernames.get(chat_id):
             wanted.add(_norm(usernames[chat_id]))
+        if any(_norm(item.get("chat_id", "")) in wanted for item in result):
+            continue
         match = next(
             (item for item in remaining if _norm(item.get("chat_id", "")) in wanted),
             None,
         )
         if match is None:
-            result.append({"chat_id": chat_id, "last_read_message_id": 0})
+            chat = new_ids.get(chat_id, chat_id)
+            result.append({"chat_id": chat, "last_read_message_id": 0})
         else:
             remaining.remove(match)
             result.append(match)

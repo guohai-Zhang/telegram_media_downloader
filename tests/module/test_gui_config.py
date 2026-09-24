@@ -21,6 +21,7 @@ from module.gui_config import (
     parse_chat_link,
     read_basic_config,
     read_chats,
+    unique_chat_ids,
     validate_basic_config,
     write_basic_config,
     write_chats,
@@ -306,6 +307,38 @@ class GuiConfigTestCase(unittest.TestCase):
                 {"chat_id": -1004, "last_read_message_id": 0},
             ],
         )
+
+    def test_merge_chats_writes_new_ids_for_new_entries_only(self):
+        existing = [{"chat_id": -1005, "last_read_message_id": 9}]
+        merged = merge_chats(
+            existing,
+            [-1005, -1006],
+            {-1005: "old", -1006: "fresh"},
+            {-1005: "old", -1006: "fresh"},
+        )
+        self.assertEqual(
+            merged,
+            [
+                {"chat_id": -1005, "last_read_message_id": 9},
+                {"chat_id": "fresh", "last_read_message_id": 0},
+            ],
+        )
+
+    def test_merge_chats_never_lists_a_chat_twice(self):
+        merged = merge_chats(
+            [], [-1005, "mychan"], {-1005: "mychan"}, {-1005: "mychan"}
+        )
+        self.assertEqual(merged, [{"chat_id": "mychan", "last_read_message_id": 0}])
+        existing = [{"chat_id": "news", "last_read_message_id": 3}]
+        merged = merge_chats(existing, [-1001, "@News"], {-1001: "news"})
+        self.assertEqual(merged, existing)
+
+    def test_unique_chat_ids(self):
+        self.assertEqual(
+            unique_chat_ids([-1002, "a_chan", -1001, "-1002", "@A_Chan", -1001]),
+            [-1002, "a_chan", -1001],
+        )
+        self.assertEqual(unique_chat_ids([]), [])
 
     def test_read_and_write_chats(self):
         ensure_config_file(self.config_path, self.save_path)

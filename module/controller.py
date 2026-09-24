@@ -44,6 +44,7 @@ from module.gui_config import (
     parse_chat_link,
     read_basic_config,
     read_chats,
+    unique_chat_ids,
     validate_basic_config,
     write_basic_config,
     write_chats,
@@ -237,7 +238,7 @@ class Controller:
     def start(self) -> None:
         """Called once at startup: connect if credentials are configured."""
         if self._app.api_id and self._app.api_hash:
-            self._begin_connect()
+            self._begin_connect(clear_notice=False)
         else:
             self._set_state(State.NEED_CONFIG)
 
@@ -251,8 +252,13 @@ class Controller:
         with self._operation(State.ERROR):
             self._begin_connect()
 
-    def _begin_connect(self) -> None:
-        """Start (or restart) connecting in the background."""
+    def _begin_connect(self, clear_notice: bool = True) -> None:
+        """Start (or restart) connecting in the background.
+
+        `clear_notice` reaches `_finish_login` if the saved session logs
+        straight in. start() passes False: the silent login at launch must
+        not wipe a startup repair notice before anyone has seen it.
+        """
         with self._state_lock:
             if self._connect_future is not None and not self._connect_future.done():
                 self._connect_future.cancel()
@@ -262,10 +268,10 @@ class Controller:
             self._dialogs = None
             self._resolved = {}
             self._connect_future = asyncio.run_coroutine_threadsafe(
-                self._connect(), self._loop
+                self._connect(clear_notice), self._loop
             )
 
-    async def _connect(self) -> None:
+    async def _connect(self, clear_notice: bool = True) -> None:
         """Create a fresh client and connect; ends in READY, LOGGED_OUT or ERROR.
 
         CONNECT_TIMEOUT bounds `client_factory()` + `client.connect()` *and*,
@@ -281,15 +287,17 @@ class Controller:
         try:
             client = self._client_factory()
             self._client = client
-            await asyncio.wait_for(self._connect_and_login(client), CONNECT_TIMEOUT)
+            await asyncio.wait_for(
+                self._connect_and_login(client, clear_notice), CONNECT_TIMEOUT
+            )
         except Exception as e:
             await self._handle_connect_failure(client, e)
 
-    async def _connect_and_login(self, client: Any) -> None:
+    async def _connect_and_login(self, client: Any, clear_notice: bool = True) -> None:
         """Connect `client` and, if it is already authorized, finish login."""
         authorized = await client.connect()
         if authorized:
-            await self._finish_login()
+            await self._finish_login(clear_notice)
         else:
             self._set_state(State.LOGGED_OUT)
 
@@ -356,13 +364,21 @@ class Controller:
         self._set_state(State.LOGGED_OUT)
         self.set_notice(REVOKED_NOTICE)
 
-    async def _finish_login(self) -> None:
-        """The part of pyrogram's Client.start() that runs after authorization."""
+    async def _finish_login(self, clear_notice: bool = True) -> None:
+        """The part of pyrogram's Client.start() that runs after authorization.
+
+        A successful (re)login makes the notice stale (REVOKED_NOTICE, the
+        startup repair notices), so it is cleared unless `clear_notice` is
+        False - only for the automatic login at launch, see _begin_connect.
+        """
         client = self._client
         await client.invoke(raw.functions.updates.GetState())
         client.me = await client.get_me()
         await client.initialize()
-        self._me = describe_user(client.me)
+        with self._state_lock:
+            self._me = describe_user(client.me)
+            if clear_notice:
+                self._notice = ""
         self._set_state(State.READY)
 
     async def _disconnect(self) -> None:
@@ -567,20 +583,34 @@ class Controller:
         return result
 
     def save_chats(self, chat_ids: List[ChatId]) -> None:
-        """Save the selected chats, keeping progress of chats that stay selected."""
+        """Save the selected chats, keeping progress of chats that stay selected.
+
+        Repeated ids are dropped first: update_config maps
+        chat_download_config back onto config["chat"] by position, so the
+        two must stay one-to-one. A new chat known only from a pasted link
+        (not a joined dialog) is saved by its username, because its numeric
+        id only resolves while the session's peer cache still remembers it,
+        which is no longer true after logging out and back in.
+        """
         if not isinstance(chat_ids, list) or any(
             isinstance(c, bool) or not isinstance(c, (int, str)) for c in chat_ids
         ):
             raise GuiError("频道列表格式不正确")
+        chat_ids = unique_chat_ids(chat_ids)
         with self._operation(State.READY):
-            known = self._known_chats()
+            with self._state_lock:
+                joined = {d["id"] for d in (self._dialogs or [])}
+                known = self._known_chats()
             usernames = {
                 c: known[c]["username"]
                 for c in chat_ids
                 if c in known and known[c]["username"]
             }
-            existing = read_chats(self._config_path)
-            write_chats(self._config_path, merge_chats(existing, chat_ids, usernames))
+            by_username = {c: u for c, u in usernames.items() if c not in joined}
+            chats = merge_chats(
+                read_chats(self._config_path), chat_ids, usernames, by_username
+            )
+            write_chats(self._config_path, chats)
             self._app.load_config()
 
     # ---- downloading

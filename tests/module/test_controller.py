@@ -15,7 +15,13 @@ from pyrogram.enums import ChatType
 
 from module.app import Application
 from module.controller import NETWORK_ERROR, Controller, State
-from module.gui_config import GuiError, InvalidState, ensure_config_file, write_chats
+from module.gui_config import (
+    GuiError,
+    InvalidState,
+    ensure_config_file,
+    read_chats,
+    write_chats,
+)
 
 HASH = "0123456789abcdef0123456789abcdef"
 
@@ -427,6 +433,32 @@ class ConnectAndLoginTestCase(ControllerTestBase):
         self.assertIs(self.controller._client, fresh_client)
         self.assertIn("connect", fresh_client.calls)
 
+        # logging in again makes the notice stale
+        self.controller.send_code("+8613800000000")
+        self.assertEqual(self.controller.status()["notice"], "登录已失效，请重新登录")
+        self.controller.sign_in("12345")
+        self.assertIs(self.controller.state, State.READY)
+        self.assertEqual(self.controller.status()["notice"], "")
+
+    def test_two_step_login_clears_notice(self):
+        self.logged_out_controller()
+        self.controller.set_notice("配置文件损坏，已备份为 x 并恢复默认配置")
+        self.client.sign_in_result = errors.SessionPasswordNeeded()
+        self.controller.send_code("+8613800000000")
+        self.controller.sign_in("12345")
+        self.assertNotEqual(self.controller.status()["notice"], "")
+        self.controller.check_password("right")
+        self.assertIs(self.controller.state, State.READY)
+        self.assertEqual(self.controller.status()["notice"], "")
+
+    def test_automatic_login_at_launch_keeps_startup_notice(self):
+        self.with_credentials()
+        self.client.authorized = True
+        self.controller.set_notice("下载记录文件损坏，已备份为 x 并重置")
+        self.controller.start()
+        self.wait_for_state(State.READY)
+        self.assertEqual(self.controller.status()["notice"], "下载记录文件损坏，已备份为 x 并重置")
+
     @mock.patch("module.controller.CONNECT_TIMEOUT", new=0.2)
     def test_revoked_session_reconnect_timeout_goes_error(self):
         self.with_credentials()
@@ -576,17 +608,61 @@ class ConfigAndDownloadTestCase(ControllerTestBase):
         self.controller.list_dialogs(refresh=True)
         self.assertEqual(self.client.calls.count("get_dialogs"), 2)
 
+    def test_save_config_login_clears_startup_notice(self):
+        self.controller.set_notice("配置文件损坏，已备份为 x 并恢复默认配置")
+        self.controller.start()
+        self.assertIs(self.controller.state, State.NEED_CONFIG)
+        self.client.authorized = True
+        self.controller.save_config(valid_form(self.tmp))
+        self.wait_for_state(State.READY)
+        self.assertEqual(self.controller.status()["notice"], "")
+
     def test_resolve_chat_and_save(self):
+        # a chat known only from a pasted link is saved by username: its
+        # numeric id needs the session's peer cache, gone after re-login
         self.ready_controller()
         self.client.chats["mychan"] = make_chat(-1005, "Mine", username="mychan")
         info = self.controller.resolve_chat("https://t.me/mychan")
         self.assertEqual(info["id"], -1005)
         self.controller.save_chats([-1005])
-        self.assertIn(-1005, self.app.chat_download_config)
+        expected = [{"chat_id": "mychan", "last_read_message_id": 0}]
+        self.assertEqual(read_chats(self.config_path), expected)
+        self.assertEqual(list(self.app.chat_download_config), ["mychan"])
         self.assertEqual(
             self.controller.current_chats(),
-            [{"chat_id": -1005, "dialog_id": -1005, "title": "Mine"}],
+            [{"chat_id": "mychan", "dialog_id": -1005, "title": "Mine"}],
         )
+        # saving again keeps the same single entry
+        self.controller.save_chats([-1005])
+        self.assertEqual(read_chats(self.config_path), expected)
+        self.controller.save_chats([-1005, "mychan"])
+        self.assertEqual(read_chats(self.config_path), expected)
+
+    def test_joined_chat_is_saved_by_id_even_with_username(self):
+        self.ready_controller()
+        chat = make_chat(-1001, "News", username="news")
+        self.client.dialogs = [SimpleNamespace(chat=chat)]
+        self.client.chats["news"] = chat
+        self.controller.list_dialogs()
+        self.controller.resolve_chat("t.me/news")
+        self.controller.save_chats([-1001])
+        self.assertEqual(
+            read_chats(self.config_path),
+            [{"chat_id": -1001, "last_read_message_id": 0}],
+        )
+
+    def test_save_chats_drops_duplicates(self):
+        self.ready_controller()
+        self.client.dialogs = [
+            SimpleNamespace(chat=make_chat(-1001, "A")),
+            SimpleNamespace(chat=make_chat(-1002, "B")),
+        ]
+        self.controller.list_dialogs()
+        self.controller.save_chats([-1002, -1001, "-1002", -1001, " @-1002 "])
+        self.assertEqual(
+            [c["chat_id"] for c in read_chats(self.config_path)], [-1002, -1001]
+        )
+        self.assertEqual(list(self.app.chat_download_config), [-1002, -1001])
 
     def test_resolve_unknown_chat(self):
         self.ready_controller()
