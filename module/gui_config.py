@@ -1,11 +1,12 @@
 """Pure helpers for the GUI: validation, parsing and config.yaml persistence.
 
-Nothing here talks to Telegram or touches threads, so it is easy to unit test.
+Nothing here talks to Telegram or starts threads, so it is easy to unit test.
 """
 
 import os
 import re
 import shutil
+import threading
 import time
 from typing import Any, Dict, Iterable, List, Optional, Union
 
@@ -14,6 +15,9 @@ from ruamel import yaml
 from module.app import DEFAULT_FILE_FORMATS, DEFAULT_MEDIA_TYPES
 
 _yaml = yaml.YAML()
+# a ruamel YAML instance is not thread-safe, and Flask serves requests on
+# several threads (GET /api/chats, for one, is not behind the op lock)
+_yaml_lock = threading.Lock()
 
 ChatId = Union[int, str]
 
@@ -44,10 +48,16 @@ class InvalidState(GuiError):
         super().__init__(message, status=409)
 
 
+def _parse(path: str) -> Any:
+    """Parse a YAML file as-is; an empty file gives None."""
+    with open(path, encoding="utf-8") as f:
+        with _yaml_lock:
+            return _yaml.load(f)
+
+
 def _load(path: str) -> Any:
     """Read a YAML file; an empty file counts as an empty mapping."""
-    with open(path, encoding="utf-8") as f:
-        data = _yaml.load(f)
+    data = _parse(path)
     return data if data is not None else {}
 
 
@@ -55,8 +65,24 @@ def _dump(path: str, data: Any) -> None:
     """Write YAML via write-then-rename so a crash never leaves a truncated config."""
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
-        _yaml.dump(data, f)
+        with _yaml_lock:
+            _yaml.dump(data, f)
     os.replace(tmp_path, path)
+
+
+def _parse_or_false(path: str) -> Any:
+    """Parse a YAML file; False when it cannot be read or parsed."""
+    try:
+        return _parse(path)
+    except Exception:
+        return False
+
+
+def _back_up(path: str) -> str:
+    """Copy a broken file to `<name>.broken-<timestamp>`; returns the backup's name."""
+    backup = f"{path}.broken-{time.strftime('%Y%m%d-%H%M%S')}"
+    shutil.copyfile(path, backup)
+    return os.path.basename(backup)
 
 
 def default_config(save_path: str) -> Dict[str, Any]:
@@ -80,18 +106,32 @@ def ensure_config_file(path: str, save_path: str) -> Optional[str]:
     """
     notice = None
     if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                data = _yaml.load(f)
-        except Exception:
-            data = False
+        data = _parse_or_false(path)
         if isinstance(data, dict):
             return None
         if data is not None:
-            backup = f"{path}.broken-{time.strftime('%Y%m%d-%H%M%S')}"
-            shutil.copyfile(path, backup)
-            notice = f"配置文件损坏，已备份为 {os.path.basename(backup)} 并恢复默认配置"
+            notice = f"配置文件损坏，已备份为 {_back_up(path)} 并恢复默认配置"
     _dump(path, default_config(save_path))
+    return notice
+
+
+def ensure_data_file(path: str) -> Optional[str]:
+    """Reset data.yaml (the retry ids) if it cannot be parsed or is not a mapping.
+
+    Application.load_config would otherwise crash on it at every launch. A
+    broken file is backed up and removed, and a notice is returned; an empty
+    one is removed silently. Without the file the app starts with no retry
+    data and writes a fresh one the next time it saves progress.
+    """
+    if not os.path.exists(path):
+        return None
+    data = _parse_or_false(path)
+    if isinstance(data, dict):
+        return None
+    notice = None
+    if data is not None:
+        notice = f"下载记录文件损坏，已备份为 {_back_up(path)} 并重置"
+    os.remove(path)
     return notice
 
 

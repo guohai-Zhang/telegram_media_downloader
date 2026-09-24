@@ -12,11 +12,21 @@ import sys
 import threading
 from typing import IO, Any, Optional
 
-from module.gui_config import ensure_config_file
+from loguru import logger
+
+from module.gui_config import ensure_config_file, ensure_data_file
 
 APP_DIR_NAME = "TelegramMediaDownloader"
 WINDOW_TITLE = "Telegram 下载器"
 QUIT_CONFIRM_MESSAGE = "正在下载，退出后进度会保存，下次可以继续。确定退出吗？"
+LOG_ROTATION = "10 MB"
+LOG_RETENTION = "10 days"
+# title and message arrive as arguments, so no text is ever parsed as AppleScript
+_ALERT_SCRIPT = (
+    "on run argv",
+    "display alert (item 1 of argv) message (item 2 of argv) giving up after 15",
+    "end run",
+)
 
 
 def _home(home: Optional[str] = None) -> str:
@@ -94,22 +104,37 @@ class NativeActions:
 def _alert(message: str) -> None:
     """Native alert for problems that happen before the window exists.
 
-    `giving up after 15` makes the dialog auto-dismiss so an unattended run
-    (e.g. the smoke test's second instance) cannot hang waiting for a click.
+    `message` can hold arbitrary text (paths, exception names), so it is
+    passed to the AppleScript run handler as an argument instead of being
+    pasted into the script. `giving up after 15` makes the dialog
+    auto-dismiss so an unattended run (e.g. the smoke test's second
+    instance) cannot hang waiting for a click.
     """
-    subprocess.run(
-        [
-            "osascript",
-            "-e",
-            f'display alert "{WINDOW_TITLE}" message "{message}" giving up after 15',
-        ],
-        check=False,
+    command = ["osascript"]
+    for line in _ALERT_SCRIPT:
+        command += ["-e", line]
+    subprocess.run(command + [WINDOW_TITLE, message], check=False)
+
+
+def _add_log_file(log_dir: str, level: Any) -> int:
+    """Add the tdl.log sink (rotated like the CLI's) and return its loguru id."""
+    return logger.add(
+        os.path.join(log_dir, "tdl.log"),
+        rotation=LOG_ROTATION,
+        retention=LOG_RETENTION,
+        level=level,
     )
 
 
-# pylint: disable = R0914
 def main() -> int:
-    """Start the loop, web server and window; clean up when the window closes."""
+    """Take the single-instance lock, then run the app; report startup failures.
+
+    Everything after the lock runs inside one try block: an error before the
+    window opens (a config the loader chokes on, a port setting that is not
+    a number, ...) would otherwise kill the app silently at every launch.
+    It is logged to tdl.log - whose sink is added first thing - and shown
+    in a native alert instead.
+    """
     ensure_std_streams()
     directory = data_dir()
     os.makedirs(directory, exist_ok=True)
@@ -120,12 +145,31 @@ def main() -> int:
         _alert("已经在运行了，请切换到已打开的窗口。")
         return 1
 
+    log_dir = os.path.join(directory, "log")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        sink_id = _add_log_file(log_dir, "INFO")
+        return _run(directory, log_dir, sink_id)
+    except Exception as e:  # pylint: disable = broad-except
+        logger.exception(e)
+        _alert(f"启动失败：{type(e).__name__}，日志在 {log_dir}")
+        return 1
+    finally:
+        lock.close()
+
+
+# pylint: disable = R0914, R0915
+def _run(directory: str, log_dir: str, sink_id: int) -> int:
+    """Start the loop, web server and window; clean up when the window closes."""
     config_path = os.path.join(directory, "config.yaml")
-    notice = ensure_config_file(config_path, default_save_path())
+    notices = [
+        ensure_config_file(config_path, default_save_path()),
+        ensure_data_file(os.path.join(directory, "data.yaml")),
+    ]
+    notice = "；".join(n for n in notices if n)
 
     # pylint: disable = import-outside-toplevel
     import webview
-    from loguru import logger
 
     import media_downloader
     from module.controller import CONNECT_TIMEOUT, Controller, State
@@ -135,12 +179,11 @@ def main() -> int:
     app = media_downloader.app
     app.load_config()
     app.pre_run()
-    logger.add(
-        os.path.join(app.log_file_path, "tdl.log"),
-        rotation="10 MB",
-        retention="10 days",
-        level=app.log_level,
-    )
+    if str(app.log_level).upper() != "INFO":
+        # add the configured level before dropping the early INFO sink, so a
+        # bad log_level still leaves a sink to record the error
+        _add_log_file(log_dir, app.log_level)
+        logger.remove(sink_id)
 
     threading.Thread(target=app.loop.run_forever, daemon=True, name="asyncio").start()
 
@@ -238,12 +281,12 @@ def main() -> int:
 
     window.events.closing += on_closing
 
-    webview.start()
-
-    # webview.start() can also return via the keyDown_ -> app.stop_ path,
-    # which never runs on_closing; cleanup() is a no-op if it already ran.
-    cleanup()
-    lock.close()
+    try:
+        webview.start()
+    finally:
+        # webview.start() can also return via the keyDown_ -> app.stop_ path,
+        # which never runs on_closing; cleanup() is a no-op if it already ran.
+        cleanup()
     return 0
 
 

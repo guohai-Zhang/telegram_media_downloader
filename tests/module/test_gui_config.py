@@ -8,11 +8,13 @@ from unittest import mock
 
 from ruamel import yaml
 
+from module import gui_config
 from module.app import DEFAULT_MEDIA_TYPES, Application
 from module.gui_config import (
     GuiError,
     InvalidState,
     ensure_config_file,
+    ensure_data_file,
     find_chat,
     merge_chats,
     normalize_phone,
@@ -91,6 +93,85 @@ class GuiConfigTestCase(unittest.TestCase):
         self.assertIsNone(ensure_config_file(self.config_path, self.save_path))
         self.assertEqual(load_yaml(self.config_path)["api_id"], "")
         self.assertFalse([n for n in os.listdir(self.tmp) if ".broken-" in n])
+
+    # ---- ensure_data_file
+    def backups(self):
+        return [n for n in os.listdir(self.tmp) if ".broken-" in n]
+
+    def test_ensure_data_file_missing_is_fine(self):
+        self.assertIsNone(ensure_data_file(os.path.join(self.tmp, "data.yaml")))
+        self.assertEqual(os.listdir(self.tmp), [])
+
+    def test_ensure_data_file_keeps_valid_file(self):
+        path = os.path.join(self.tmp, "data.yaml")
+        text = "chat:\n- chat_id: -1001\n  ids_to_retry: [3, 4]\n"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        self.assertIsNone(ensure_data_file(path))
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), text)
+
+    def test_ensure_data_file_backs_up_and_removes_truncated_file(self):
+        path = os.path.join(self.tmp, "data.yaml")
+        text = "chat:\n- chat_id: -1001\n  ids_to_retry: [3, 4"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        notice = ensure_data_file(path)
+        self.assertIn("下载记录文件损坏", notice)
+        self.assertIn("并重置", notice)
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual(len(self.backups()), 1)
+        self.assertTrue(self.backups()[0].startswith("data.yaml.broken-"))
+        self.assertIn(self.backups()[0], notice)
+        with open(os.path.join(self.tmp, self.backups()[0]), encoding="utf-8") as f:
+            self.assertEqual(f.read(), text)
+
+    def test_ensure_data_file_resets_non_mapping(self):
+        path = os.path.join(self.tmp, "data.yaml")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("- 1\n- 2\n")
+        self.assertIn("已备份", ensure_data_file(path))
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual(len(self.backups()), 1)
+
+    def test_ensure_data_file_removes_empty_file_without_backup(self):
+        path = os.path.join(self.tmp, "data.yaml")
+        open(path, "w", encoding="utf-8").close()
+        self.assertIsNone(ensure_data_file(path))
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual(self.backups(), [])
+
+    def test_app_starts_clean_after_data_file_reset(self):
+        ensure_config_file(self.config_path, self.save_path)
+        write_chats(self.config_path, [{"chat_id": -1001, "last_read_message_id": 5}])
+        data_path = os.path.join(self.tmp, "data.yaml")
+        with open(data_path, "w", encoding="utf-8") as f:
+            f.write("chat:\n- chat_id: -1001\n  ids_to_retry: [3, 4")
+        ensure_data_file(data_path)
+        app = Application(self.config_path, data_path)
+        app.load_config()
+        self.assertEqual(app.chat_download_config[-1001].ids_to_retry, [])
+
+    # ---- thread safety
+    def test_yaml_instance_is_used_under_the_lock(self):
+        ensure_config_file(self.config_path, self.save_path)
+        seen = []
+        real_load, real_dump = gui_config._yaml.load, gui_config._yaml.dump
+
+        def load(stream):
+            seen.append(("load", gui_config._yaml_lock.locked()))
+            return real_load(stream)
+
+        def dump(data, stream):
+            seen.append(("dump", gui_config._yaml_lock.locked()))
+            return real_dump(data, stream)
+
+        with mock.patch.object(gui_config._yaml, "load", side_effect=load):
+            with mock.patch.object(gui_config._yaml, "dump", side_effect=dump):
+                write_chats(self.config_path, [{"chat_id": 1}])
+                read_chats(self.config_path)
+        self.assertEqual(seen, [("load", True), ("dump", True), ("load", True)])
+        self.assertFalse(gui_config._yaml_lock.locked())
 
     # ---- validate_basic_config
     def test_validate_normalizes_values(self):
