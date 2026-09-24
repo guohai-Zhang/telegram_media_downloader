@@ -172,6 +172,20 @@ class Controller:
         """Run a coroutine on the loop thread and wait for its result."""
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
 
+    def _client_call(self, method: str, *args: Any) -> Any:
+        """Call a Telegram client method on the loop thread and wait for its result.
+
+        pyrogram wraps every Client method in an async-to-sync layer: called from
+        a request thread it would run the call right there on a throwaway loop
+        (and fail with "attached to a different loop"). Looking the method up
+        inside a coroutine on our loop makes it return a plain coroutine instead.
+        """
+
+        async def call() -> Any:
+            return await getattr(self._client, method)(*args)
+
+        return self._run(call())
+
     @contextlib.contextmanager
     def _operation(self, *states: State) -> Iterator[None]:
         """Run one user operation: reject concurrent ones, check state, map errors."""
@@ -460,7 +474,7 @@ class Controller:
         """Step 1: ask Telegram to send a login code."""
         phone = normalize_phone(phone)
         with self._operation(State.LOGGED_OUT, State.CODE_SENT):
-            sent = self._run(self._client.send_code(phone))
+            sent = self._client_call("send_code", phone)
             self._phone, self._phone_code_hash = phone, sent.phone_code_hash
             self._set_state(State.CODE_SENT)
 
@@ -471,11 +485,11 @@ class Controller:
             raise GuiError("请输入验证码")
         with self._operation(State.CODE_SENT):
             try:
-                result = self._run(
-                    self._client.sign_in(self._phone, self._phone_code_hash, code)
+                result = self._client_call(
+                    "sign_in", self._phone, self._phone_code_hash, code
                 )
             except SessionPasswordNeeded:
-                hint = self._run(self._client.get_password_hint())
+                hint = self._client_call("get_password_hint")
                 self._set_state(State.NEED_PASSWORD)
                 with self._state_lock:
                     self._password_hint = hint or ""
@@ -494,13 +508,13 @@ class Controller:
         if not password:
             raise GuiError("请输入两步验证密码")
         with self._operation(State.NEED_PASSWORD):
-            self._run(self._client.check_password(password))
+            self._client_call("check_password", password)
             self._run(self._finish_login())
 
     def log_out(self) -> None:
         """Log out (deletes the session) and go back to the phone step."""
         with self._operation(State.READY):
-            self._run(self._client.log_out())
+            self._client_call("log_out")
             self._client = None
             self._begin_connect()
 
@@ -549,7 +563,7 @@ class Controller:
         username = parse_chat_link(link)
         self._require(State.READY)
         try:
-            chat = self._run(self._client.get_chat(username))
+            chat = self._client_call("get_chat", username)
         except _CHAT_NOT_FOUND as e:
             raise GuiError("找不到这个频道，请确认链接是公开的频道或群组") from e
         except Exception as e:

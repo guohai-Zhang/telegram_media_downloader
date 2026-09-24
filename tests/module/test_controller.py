@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from pyrogram import errors
+from pyrogram import sync as pyrogram_sync
 from pyrogram.enums import ChatType
 
 from module.app import Application
@@ -806,3 +807,92 @@ class ConfigAndDownloadTestCase(ControllerTestBase):
         self.controller.shutdown(timeout=0.05)
         self.assertIn("disconnect", self.client.calls)
         time.sleep(0.4)  # let the abandoned stop finish before tearDown stops the loop
+
+
+class WrappedFakeClient(FakeClient):
+    """Like the real HookClient: public coroutine methods go through pyrogram's
+    async-to-sync wrapper, which runs them on a throwaway loop when they are
+    called from a thread whose loop isn't running (e.g. a Flask request thread).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.loops = []
+
+    async def send_code(self, phone):
+        self.loops.append(asyncio.get_running_loop())
+        return await FakeClient.send_code(self, phone)
+
+    async def sign_in(self, phone, phone_code_hash, code):
+        self.loops.append(asyncio.get_running_loop())
+        return await FakeClient.sign_in(self, phone, phone_code_hash, code)
+
+    async def get_password_hint(self):
+        self.loops.append(asyncio.get_running_loop())
+        return await FakeClient.get_password_hint(self)
+
+    async def check_password(self, password):
+        self.loops.append(asyncio.get_running_loop())
+        return await FakeClient.check_password(self, password)
+
+    async def log_out(self):
+        self.loops.append(asyncio.get_running_loop())
+        return await FakeClient.log_out(self)
+
+    async def get_chat(self, username):
+        self.loops.append(asyncio.get_running_loop())
+        return await FakeClient.get_chat(self, username)
+
+
+for _name in (
+    "send_code",
+    "sign_in",
+    "get_password_hint",
+    "check_password",
+    "log_out",
+    "get_chat",
+):
+    pyrogram_sync.async_to_sync(WrappedFakeClient, _name)
+
+
+class RequestThreadTestCase(ControllerTestBase):
+    """Controller methods are called from Flask threads; every Telegram call must
+    still run on the controller's loop (regression: "attached to a different loop")."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = WrappedFakeClient()
+
+    def call_in_thread(self, fn, *args):
+        outcome = {}
+
+        def target():
+            try:
+                outcome["result"] = fn(*args)
+            except BaseException as e:  # re-raised in the test thread
+                outcome["error"] = e
+
+        thread = threading.Thread(target=target)
+        thread.start()
+        thread.join(10)
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome.get("result")
+
+    def test_login_calls_run_on_controller_loop(self):
+        self.logged_out_controller()
+        self.client.sign_in_result = errors.SessionPasswordNeeded()
+        self.call_in_thread(self.controller.send_code, "+8613800000000")
+        self.call_in_thread(self.controller.sign_in, "12345")
+        self.call_in_thread(self.controller.check_password, "pw")
+        self.assertIs(self.controller.state, State.READY)
+        self.assertEqual(len(self.client.loops), 4)
+        self.assertEqual({id(loop) for loop in self.client.loops}, {id(self.loop)})
+
+    def test_resolve_and_log_out_run_on_controller_loop(self):
+        self.ready_controller()
+        self.client.chats["mychan"] = make_chat(-1005, "Mine", username="mychan")
+        self.call_in_thread(self.controller.resolve_chat, "t.me/mychan")
+        self.call_in_thread(self.controller.log_out)
+        self.wait_for_state(State.LOGGED_OUT)
+        self.assertEqual({id(loop) for loop in self.client.loops}, {id(self.loop)})
