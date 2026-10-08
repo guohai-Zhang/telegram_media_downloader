@@ -289,3 +289,17 @@ class WebApiTestCase(unittest.TestCase):
         res = self.client.post("/api/native/open_log_folder", headers=self.headers)
         self.assertEqual(res.get_json(), {"ok": True, "data": None})
         self.assertEqual(native.calls, ["choose_folder", "open_log_folder"])
+
+    def test_pause_keeps_the_downloading_list(self):
+        download_stat.get_download_result()[-100] = {
+            7: {
+                "down_byte": 50,
+                "total_size": 100,
+                "file_name": "/tmp/a.mp4",
+                "download_speed": 1,
+            }
+        }
+        res = self.client.post("/set_download_state?state=pause", headers=self.headers)
+        self.assertEqual(res.status_code, 200)
+        rows = json.loads(self.client.get("/get_download_list?already_down=false").data)
+        self.assertEqual([row["id"] for row in rows], ["7"])
