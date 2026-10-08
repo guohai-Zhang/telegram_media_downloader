@@ -590,6 +590,12 @@ async def download_chat_task(
             )
 
             for message in skipped_messages:
+                if app.is_before_start(
+                    chat_download_config, getattr(message, "date", None)
+                ):
+                    # dropped from ids_to_retry when progress is saved
+                    node.download_status[message.id] = DownloadStatus.SkipDownload
+                    continue
                 await add_download_task(message, node)
 
     async for message in messages_iter:  # type: ignore

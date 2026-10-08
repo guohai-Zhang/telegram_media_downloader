@@ -22,3 +22,4 @@
 .has-pywebview .gui-pywebview-only { display: inline-block !important; }
 .gui-url { display: flex; align-items: center; gap: 6px; padding-top: 4px; }
 .gui-url input { width: 340px; height: 26px; font-size: 12px; }
+.gui-chat-row .gui-month { flex: none; width: 150px; height: 28px; font-size: 12px; }

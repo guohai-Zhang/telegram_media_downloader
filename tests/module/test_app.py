@@ -177,3 +177,28 @@ class UpdateConfigFilesTestCase(unittest.TestCase):
         self.assertEqual(app.max_file_size_mb, 0)
         app.assign_config({"max_file_size_mb": 200})
         self.assertEqual(app.max_file_size_mb, 200)
+
+    def test_start_month_parsing_and_skip_rule(self):
+        from datetime import datetime as dt
+
+        from utils.meta_data import MetaData
+
+        app = Application("", "")
+        app.assign_config(
+            {
+                "chat": [
+                    {"chat_id": 1, "start_month": "2024-06"},
+                    {"chat_id": 2, "start_month": "bad"},
+                ]
+            }
+        )
+        first = app.chat_download_config[1]
+        self.assertEqual(first.start_date, dt(2024, 6, 1))
+        self.assertIsNone(app.chat_download_config[2].start_date)
+        self.assertTrue(app.is_before_start(first, dt(2024, 5, 31, 23, 59)))
+        self.assertFalse(app.is_before_start(first, dt(2024, 6, 1)))
+        meta = MetaData()
+        meta.message_date = dt(2024, 1, 1)
+        self.assertFalse(app.exec_filter(first, meta))
+        meta.message_date = dt(2024, 7, 1)
+        self.assertTrue(app.exec_filter(first, meta))

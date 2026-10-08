@@ -1272,3 +1272,31 @@ class RetryBatchTestCase(unittest.TestCase):
         self.assertEqual(node.total_task, 450)
         self.assertTrue(all(len(ids) <= 200 for ids in calls))
         self.assertEqual(sorted(i for ids in calls for i in ids), list(range(1, 451)))
+
+    def test_retry_skips_messages_before_start_month(self):
+        class Client:
+            async def get_messages(self, chat_id, message_ids):
+                return [
+                    MockMessage(
+                        id=1, media=True, chat_id=chat_id, date=datetime(2024, 1, 5)
+                    ),
+                    MockMessage(
+                        id=2, media=True, chat_id=chat_id, date=datetime(2024, 8, 5)
+                    ),
+                ]
+
+        async def no_history(*_args, **_kwargs):
+            return
+            yield  # pylint: disable = unreachable
+
+        config = ChatDownloadConfig()
+        config.ids_to_retry = [1, 2]
+        config.start_date = datetime(2024, 6, 1)
+        node = TaskNode(chat_id=8654123)
+        media_downloader.queue = asyncio.Queue()
+        with mock.patch("media_downloader.get_chat_history_v2", new=no_history):
+            app.loop.run_until_complete(
+                media_downloader.download_chat_task(Client(), config, node)
+            )
+        self.assertEqual(node.total_task, 1)
+        self.assertIs(node.download_status[1], DownloadStatus.SkipDownload)

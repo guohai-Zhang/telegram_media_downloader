@@ -310,7 +310,20 @@ class ChatDownloadConfig:
         self.finish_task: int = 0
         self.need_check: bool = False
         self.upload_telegram_chat_id: Union[int, str] = None
+        # messages sent before this are skipped (config: start_month "YYYY-MM")
+        self.start_date: Optional[datetime] = None
         self.node: TaskNode = TaskNode(0)
+
+
+def parse_start_month(value) -> Optional[datetime]:
+    """'YYYY-MM' -> the first day of that month; empty or invalid -> None."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value).strip(), "%Y-%m")
+    except ValueError:
+        logger.warning(f"ignoring invalid start_month {value!r}, expected YYYY-MM")
+        return None
 
 
 def get_config(config, key, default=None, val_type=str, verbose=True):
@@ -619,6 +632,9 @@ class Application:
                     ].download_filter = item.get("download_filter", "")
                     self.chat_download_config[
                         item["chat_id"]
+                    ].start_date = parse_start_month(item.get("start_month"))
+                    self.chat_download_config[
+                        item["chat_id"]
                     ].upload_telegram_chat_id = item.get(
                         "upload_telegram_chat_id", None
                     )
@@ -831,6 +847,16 @@ class Application:
 
         return False
 
+    @staticmethod
+    def is_before_start(download_config: ChatDownloadConfig, message_date) -> bool:
+        """True when the chat has a start month and the message is older."""
+        start = download_config.start_date
+        if not start or not isinstance(message_date, datetime):
+            return False
+        if message_date.tzinfo is not None:
+            start = start.replace(tzinfo=message_date.tzinfo)
+        return message_date < start
+
     def exec_filter(self, download_config: ChatDownloadConfig, meta_data: MetaData):
         """
         Executes the filter on the given download configuration.
@@ -842,6 +868,8 @@ class Application:
         Returns:
             bool: The result of executing the filter.
         """
+        if self.is_before_start(download_config, meta_data.message_date):
+            return False
         if download_config.download_filter:
             self.download_filter.set_meta_data(meta_data)
             return self.download_filter.exec(download_config.download_filter)

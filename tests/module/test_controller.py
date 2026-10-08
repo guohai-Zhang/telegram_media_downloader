@@ -631,7 +631,14 @@ class ConfigAndDownloadTestCase(ControllerTestBase):
         self.assertEqual(list(self.app.chat_download_config), ["mychan"])
         self.assertEqual(
             self.controller.current_chats(),
-            [{"chat_id": "mychan", "dialog_id": -1005, "title": "Mine"}],
+            [
+                {
+                    "chat_id": "mychan",
+                    "dialog_id": -1005,
+                    "title": "Mine",
+                    "start_month": "",
+                }
+            ],
         )
         # saving again keeps the same single entry
         self.controller.save_chats([-1005])
@@ -684,7 +691,14 @@ class ConfigAndDownloadTestCase(ControllerTestBase):
         self.controller.list_dialogs()
         self.assertEqual(
             self.controller.current_chats(),
-            [{"chat_id": "mychan", "dialog_id": -1001, "title": "Mine"}],
+            [
+                {
+                    "chat_id": "mychan",
+                    "dialog_id": -1001,
+                    "title": "Mine",
+                    "start_month": "",
+                }
+            ],
         )
         self.controller.save_chats([-1001])
         self.assertEqual(
@@ -926,3 +940,22 @@ class FileSizeLimitTestCase(ControllerTestBase):
         self.ready_with_dialog()
         with self.assertRaises(GuiError):
             self.controller.save_chats([-1001], -5)
+
+
+class StartMonthControllerTestCase(ControllerTestBase):
+    def test_save_chats_with_start_months(self):
+        self.ready_controller()
+        self.client.dialogs = [SimpleNamespace(chat=make_chat(-1001, "News"))]
+        self.controller.list_dialogs()
+        self.controller.save_chats([-1001], None, {"-1001": "2024-06"})
+        from datetime import datetime as dt
+
+        self.assertEqual(
+            self.app.chat_download_config[-1001].start_date, dt(2024, 6, 1)
+        )
+        self.assertEqual(self.controller.current_chats()[0]["start_month"], "2024-06")
+        self.controller.save_chats([-1001], None, {"-1001": ""})
+        self.assertIsNone(self.app.chat_download_config[-1001].start_date)
+        self.assertEqual(self.controller.current_chats()[0]["start_month"], "")
+        with self.assertRaises(GuiError):
+            self.controller.save_chats([-1001], None, {"-1001": "2024-6"})

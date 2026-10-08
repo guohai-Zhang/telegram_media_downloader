@@ -383,7 +383,9 @@ def api_get_chats(controller):
 def api_save_chats(controller):
     """Save the selected chats"""
     body = _json()
-    controller.save_chats(body.get("chat_ids"), body.get("max_file_size_mb"))
+    controller.save_chats(
+        body.get("chat_ids"), body.get("max_file_size_mb"), body.get("start_months")
+    )
 
 
 @_flask_app.route("/api/download/start", methods=["POST"])

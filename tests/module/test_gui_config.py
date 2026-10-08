@@ -26,9 +26,11 @@ from module.gui_config import (
     parse_chat_link,
     read_basic_config,
     read_chats,
+    set_start_months,
     unique_chat_ids,
     validate_basic_config,
     validate_max_file_size,
+    validate_start_months,
     write_basic_config,
     write_chats,
     write_max_file_size,
@@ -458,3 +460,26 @@ class MaxFileSizeTestCase(unittest.TestCase):
         write_max_file_size(self.config_path, 0)
         self.assertFalse(fill_default_max_file_size(self.config_path))
         self.assertEqual(load_yaml(self.config_path)["max_file_size_mb"], 0)
+
+
+class StartMonthTestCase(unittest.TestCase):
+    def test_validate_start_months(self):
+        self.assertEqual(validate_start_months(None), {})
+        self.assertEqual(
+            validate_start_months({"-1001": "2024-06", "@MyChan": ""}),
+            {"-1001": "2024-06", "mychan": ""},
+        )
+        for bad in ({"1": "2024-13"}, {"1": "2024/06"}, {"1": "24-06"}, ["2024-06"]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(GuiError):
+                    validate_start_months(bad)
+
+    def test_set_start_months_sets_and_clears(self):
+        chats = [
+            {"chat_id": -1001, "last_read_message_id": 5, "start_month": "2023-01"},
+            {"chat_id": "mychan", "last_read_message_id": 0},
+        ]
+        set_start_months(chats, {"-1001": "", "-1005": "2024-06"}, {-1005: "MyChan"})
+        self.assertNotIn("start_month", chats[0])
+        self.assertEqual(chats[1]["start_month"], "2024-06")
+        self.assertEqual(chats[0]["last_read_message_id"], 5)

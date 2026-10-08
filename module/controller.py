@@ -44,9 +44,11 @@ from module.gui_config import (
     parse_chat_link,
     read_basic_config,
     read_chats,
+    set_start_months,
     unique_chat_ids,
     validate_basic_config,
     validate_max_file_size,
+    validate_start_months,
     write_basic_config,
     write_chats,
     write_max_file_size,
@@ -596,11 +598,17 @@ class Controller:
                     "chat_id": chat_id,
                     "dialog_id": match["id"] if match else None,
                     "title": match["title"] if match else str(chat_id),
+                    "start_month": str(item.get("start_month") or ""),
                 }
             )
         return result
 
-    def save_chats(self, chat_ids: List[ChatId], max_file_size_mb: Any = None) -> None:
+    def save_chats(
+        self,
+        chat_ids: List[ChatId],
+        max_file_size_mb: Any = None,
+        start_months: Any = None,
+    ) -> None:
         """Save the selected chats, keeping progress of chats that stay selected.
 
         Repeated ids are dropped first: update_config maps
@@ -617,6 +625,7 @@ class Controller:
         limit = None
         if max_file_size_mb is not None:
             limit = validate_max_file_size(max_file_size_mb)
+        months = validate_start_months(start_months)
         chat_ids = unique_chat_ids(chat_ids)
         with self._operation(State.READY):
             with self._state_lock:
@@ -631,6 +640,7 @@ class Controller:
             chats = merge_chats(
                 read_chats(self._config_path), chat_ids, usernames, by_username
             )
+            set_start_months(chats, months, usernames)
             write_chats(self._config_path, chats)
             if limit is not None:
                 write_max_file_size(self._config_path, limit)

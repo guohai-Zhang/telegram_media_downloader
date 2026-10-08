@@ -69,6 +69,7 @@ layui.use(['element', 'layer'], function () {
     dialogs = dialogs || [];
     saved = saved || [];
     var checkedById = {};
+    var monthById = {};
     var extra = [];
     saved.forEach(function (c) {
       var normKey = normalizeKey(c.chat_id);
@@ -80,12 +81,13 @@ layui.use(['element', 'layer'], function () {
       })[0];
       if (match) {
         checkedById[String(match.id)] = true;
+        monthById[String(match.id)] = c.start_month || '';
       } else {
-        extra.push({ key: c.chat_id, title: c.title, type: '', username: '', checked: true });
+        extra.push({ key: c.chat_id, title: c.title, type: '', username: '', checked: true, startMonth: c.start_month || '' });
       }
     });
     return extra.concat(dialogs.map(function (d) {
-      return { key: d.id, title: d.title, type: d.type, username: d.username, checked: !!checkedById[String(d.id)] };
+      return { key: d.id, title: d.title, type: d.type, username: d.username, checked: !!checkedById[String(d.id)], startMonth: monthById[String(d.id)] || '' };
     }));
   }
 
@@ -310,6 +312,8 @@ layui.use(['element', 'layer'], function () {
         '<span class="gui-chat-title">' + esc(row.title) + '</span>' +
         (row.type ? '<span class="layui-badge layui-bg-gray">' + esc(TYPE_TEXT[row.type] || row.type) + '</span>' : '') +
         (row.username ? '<span class="gui-tip">@' + esc(row.username) + '</span>' : '') +
+        '<input class="layui-input gui-month" data-month-index="' + index + '" maxlength="7" ' +
+        'placeholder="起始年月 如 2024-06" value="' + esc(row.startMonth || '') + '">' +
         '</label>';
     }).join('');
     $('#chat_list').html(html || '<p class="gui-tip">没有找到频道或群组。</p>');
@@ -367,6 +371,9 @@ layui.use(['element', 'layer'], function () {
   }
 
   $('#chat_search').on('input', renderChats);
+  $('#chat_list').on('input change', 'input.gui-month', function () {
+    chatRows[Number(this.getAttribute('data-month-index'))].startMonth = $.trim(this.value);
+  });
   $('#chat_list').on('change', 'input[type=checkbox]', function () {
     chatRows[Number(this.getAttribute('data-index'))].checked = this.checked;
     $('#chat_selected').text('已选 ' + selectedCount() + ' 个');
@@ -391,7 +398,7 @@ layui.use(['element', 'layer'], function () {
         existing.username = info.username;
         existing.checked = true;
       } else {
-        chatRows.unshift({ key: info.id, title: info.title, type: info.type, username: info.username, checked: true });
+        chatRows.unshift({ key: info.id, title: info.title, type: info.type, username: info.username, checked: true, startMonth: '' });
       }
       $('#chat_link').val('');
       renderChats();
@@ -400,7 +407,13 @@ layui.use(['element', 'layer'], function () {
   });
   $('#btn_save_chats').on('click', function () {
     var ids = chatRows.filter(function (r) { return r.checked; }).map(function (r) { return r.key; });
-    var payload = { chat_ids: ids, max_file_size_mb: $('#max_file_size_mb').val() };
+    var months = {};
+    chatRows.forEach(function (r) {
+      if (r.checked) {
+        months[String(r.key)] = r.startMonth || '';
+      }
+    });
+    var payload = { chat_ids: ids, max_file_size_mb: $('#max_file_size_mb').val(), start_months: months };
     api('POST', 'api/chats', payload).then(function () {
       toast('已保存 ' + ids.length + ' 个频道', true);
       refreshStatus();

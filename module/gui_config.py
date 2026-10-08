@@ -38,6 +38,7 @@ _LINK_PREFIX = re.compile(r"^(?:https?://)?(?:www\.)?(?:t|telegram)\.me/(?:s/)?"
 _USERNAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
 _API_HASH = re.compile(r"^[0-9a-f]{32}$")
 _PHONE = re.compile(r"^\+?\d{6,15}$")
+_START_MONTH = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 class GuiError(Exception):
@@ -190,6 +191,47 @@ def write_max_file_size(path: str, max_file_size_mb: int) -> None:
     data = _load(path)
     data["max_file_size_mb"] = max_file_size_mb
     _dump(path, data)
+
+
+def validate_start_months(raw: Any) -> Dict[str, str]:
+    """Parse {chat_id: "YYYY-MM" or ""} from the chats page ("" clears it).
+
+    Keys are normalized like chat ids/usernames elsewhere in this module.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise GuiError("起始年月格式不正确")
+    result: Dict[str, str] = {}
+    for key, value in raw.items():
+        text = str(value or "").strip()
+        if text and not _START_MONTH.match(text):
+            raise GuiError(f"起始年月格式应为 YYYY-MM，例如 2024-06（收到 {text}）")
+        result[_norm(key)] = text
+    return result
+
+
+def set_start_months(
+    chats: List[Any], start_months: Dict[str, str], usernames: Dict[Any, str]
+) -> None:
+    """Write each chat's start_month into its saved entry ("" removes it).
+
+    `start_months` comes from validate_start_months; an entry matches by its
+    chat id or, for chats saved by username, by that username.
+    """
+    names = {_norm(k): _norm(v) for k, v in usernames.items() if v}
+    for key, month in start_months.items():
+        wanted = {key}
+        if key in names:
+            wanted.add(names[key])
+        for item in chats:
+            if _norm(item.get("chat_id", "")) not in wanted:
+                continue
+            if month:
+                item["start_month"] = month
+            elif "start_month" in item:
+                del item["start_month"]
+            break
 
 
 def _validate_proxy(raw: Any) -> Optional[Dict[str, Any]]:
