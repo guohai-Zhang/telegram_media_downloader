@@ -1108,6 +1108,37 @@ class MediaDownloaderTestCase(unittest.TestCase):
         # start/stop lifecycle, so it must stay open here.
         pass
 
+    def test_download_media_skips_files_over_size_limit(self):
+        rest_app(MOCK_CONF)
+        app.max_file_size_mb = 1
+        self.addCleanup(setattr, app, "max_file_size_mb", 0)
+        message = MockMessage(
+            id=900,
+            media=True,
+            chat_title="test_size",
+            date=datetime(2019, 7, 25, 14, 53, 50),
+            video=MockVideo(
+                file_name="big.mp4",
+                mime_type="video/mp4",
+                file_size=2 * 1024 * 1024,
+            ),
+        )
+        downloads = []
+
+        class RecordingClient(MockClient):
+            async def download_media(self, *args, **kwargs):
+                downloads.append(kwargs.get("file_name"))
+                return kwargs.get("file_name")
+
+        res = self.loop.run_until_complete(
+            async_download_media(
+                RecordingClient(), message, ["video"], {"video": ["all"]}
+            )
+        )
+        self.assertEqual(downloads, [])
+        # kept out of SkipDownload so it stays in ids_to_retry for a larger limit
+        self.assertEqual(res, (DownloadStatus.FailedDownload, None))
+
 
 async def _noop(*_args, **_kwargs):
     return None

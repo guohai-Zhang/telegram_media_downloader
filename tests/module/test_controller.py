@@ -906,3 +906,23 @@ class ProgressStatusTestCase(ControllerTestBase):
         self.assertEqual(progress["downloaded"], 7)
         self.assertIn("total", progress)
         self.assertIn("done", progress)
+
+
+class FileSizeLimitTestCase(ControllerTestBase):
+    def ready_with_dialog(self):
+        self.ready_controller()
+        self.client.dialogs = [SimpleNamespace(chat=make_chat(-1001, "News"))]
+        self.controller.list_dialogs()
+
+    def test_save_chats_saves_max_file_size(self):
+        self.ready_with_dialog()
+        self.controller.save_chats([-1001], "300")
+        self.assertEqual(self.app.max_file_size_mb, 300)
+        self.assertEqual(self.controller.get_config()["max_file_size_mb"], 300)
+        self.controller.save_chats([-1001])
+        self.assertEqual(self.app.max_file_size_mb, 300)
+
+    def test_invalid_max_file_size_is_rejected(self):
+        self.ready_with_dialog()
+        with self.assertRaises(GuiError):
+            self.controller.save_chats([-1001], -5)

@@ -55,8 +55,8 @@ class FakeController:
     def current_chats(self):
         return self._call("current_chats")
 
-    def save_chats(self, chat_ids):
-        self._call("save_chats", chat_ids)
+    def save_chats(self, chat_ids, max_file_size_mb=None):
+        self._call("save_chats", chat_ids, max_file_size_mb)
 
     def start_download(self):
         self._call("start_download")
@@ -182,7 +182,11 @@ class WebApiTestCase(unittest.TestCase):
         self.client.get("/api/dialogs", headers=h)
         self.client.post("/api/chats/resolve", json={"link": "t.me/x"}, headers=h)
         self.client.get("/api/chats", headers=h)
-        self.client.post("/api/chats", json={"chat_ids": [1, "a"]}, headers=h)
+        self.client.post(
+            "/api/chats",
+            json={"chat_ids": [1, "a"], "max_file_size_mb": 300},
+            headers=h,
+        )
         self.client.post("/api/download/start", headers=h)
         self.client.post("/api/download/stop", headers=h)
         self.client.get("/api/config", headers=h)
@@ -199,7 +203,7 @@ class WebApiTestCase(unittest.TestCase):
                 ("list_dialogs", False),
                 ("resolve_chat", "t.me/x"),
                 ("current_chats",),
-                ("save_chats", [1, "a"]),
+                ("save_chats", [1, "a"], 300),
                 ("start_download",),
                 ("stop_download",),
                 ("get_config",),

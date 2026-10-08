@@ -111,6 +111,11 @@
     <button type="button" class="layui-btn layui-btn-primary" id="btn_add_link">添加</button>
   </div>
   <div class="gui-row">
+    <label>单个文件最大</label>
+    <input class="layui-input gui-narrow" type="number" min="0" id="max_file_size_mb"> MB
+    <span class="gui-tip">超过的文件先跳过，调大后下次开始会补下；0 表示不限</span>
+  </div>
+  <div class="gui-row">
     <button type="button" class="layui-btn" id="btn_save_chats">保存</button>
     <span class="gui-tip" id="chat_selected"></span>
   </div>

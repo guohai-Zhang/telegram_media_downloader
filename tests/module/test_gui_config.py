@@ -13,11 +13,13 @@ from module.app import DEFAULT_MEDIA_TYPES, Application
 from module.gui_config import (
     DEFAULT_API_HASH,
     DEFAULT_API_ID,
+    DEFAULT_MAX_FILE_SIZE_MB,
     GuiError,
     InvalidState,
     ensure_config_file,
     ensure_data_file,
     fill_default_credentials,
+    fill_default_max_file_size,
     find_chat,
     merge_chats,
     normalize_phone,
@@ -26,8 +28,10 @@ from module.gui_config import (
     read_chats,
     unique_chat_ids,
     validate_basic_config,
+    validate_max_file_size,
     write_basic_config,
     write_chats,
+    write_max_file_size,
 )
 
 HASH = "0123456789abcdef0123456789abcdef"
@@ -287,6 +291,7 @@ class GuiConfigTestCase(unittest.TestCase):
                 "save_path": self.save_path,
                 "media_types": ["photo", "video"],
                 "max_download_task": 5,
+                "max_file_size_mb": 0,
             },
         )
 
@@ -426,3 +431,30 @@ class DefaultCredentialsTestCase(unittest.TestCase):
             self.assertEqual(
                 f.read(), "# mine\napi_id: 12345\napi_hash: " + HASH + "\n"
             )
+
+
+class MaxFileSizeTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.config_path = os.path.join(self.tmp, "config.yaml")
+        ensure_config_file(self.config_path, os.path.join(self.tmp, "dl"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_validate_max_file_size(self):
+        self.assertEqual(validate_max_file_size("200"), 200)
+        self.assertEqual(validate_max_file_size(0), 0)
+        for bad in (-1, "abc", "1.5", 1.5, True, None, 1_000_001):
+            with self.subTest(bad=bad):
+                with self.assertRaises(GuiError):
+                    validate_max_file_size(bad)
+
+    def test_default_applies_only_when_missing(self):
+        self.assertTrue(fill_default_max_file_size(self.config_path))
+        self.assertEqual(
+            load_yaml(self.config_path)["max_file_size_mb"], DEFAULT_MAX_FILE_SIZE_MB
+        )
+        write_max_file_size(self.config_path, 0)
+        self.assertFalse(fill_default_max_file_size(self.config_path))
+        self.assertEqual(load_yaml(self.config_path)["max_file_size_mb"], 0)

@@ -351,6 +351,13 @@ async def download_task(
 # pylint: disable = R0915,R0914
 
 
+def _exceeds_size_limit(media_size: int) -> bool:
+    """True when a max file size is configured and the file is larger."""
+    limit_mb = app.max_file_size_mb
+    return bool(limit_mb) and (media_size or 0) > limit_mb * 1024 * 1024
+
+
+# pylint: disable = R0911
 @record_download_status
 async def download_media(
     client: pyrogram.client.Client,
@@ -425,6 +432,15 @@ async def download_media(
                         return DownloadStatus.SkipDownload, None
             else:
                 return DownloadStatus.SkipDownload, None
+
+            if _exceeds_size_limit(media_size):
+                logger.info(
+                    f"id={message.id} {ui_file_name} is larger than "
+                    f"max_file_size_mb={app.max_file_size_mb}, skipped for now.\n"
+                )
+                # not SkipDownload: it stays in ids_to_retry, so raising the
+                # limit later downloads it on the next run
+                return DownloadStatus.FailedDownload, None
 
             break
     except Exception as e:

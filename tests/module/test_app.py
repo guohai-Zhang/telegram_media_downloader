@@ -170,3 +170,10 @@ class UpdateConfigFilesTestCase(unittest.TestCase):
         app.update_config()
         self.assertEqual(sorted(os.listdir(self.tmp)), ["config.yaml", "data.yaml"])
         self.assertEqual(self.load(self.data_path)["chat"][0]["chat_id"], 5)
+
+    def test_assign_config_max_file_size(self):
+        app = Application("", "")
+        app.assign_config({})
+        self.assertEqual(app.max_file_size_mb, 0)
+        app.assign_config({"max_file_size_mb": 200})
+        self.assertEqual(app.max_file_size_mb, 200)

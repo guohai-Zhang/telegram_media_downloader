@@ -26,6 +26,9 @@ ChatId = Union[int, str]
 DEFAULT_API_ID = 2040
 DEFAULT_API_HASH = "b18441a1ff607e10a989891a5462e627"
 
+DEFAULT_MAX_FILE_SIZE_MB = 200
+MAX_FILE_SIZE_MB_LIMIT = 1_000_000
+
 MAX_DOWNLOAD_TASK_MIN = 1
 MAX_DOWNLOAD_TASK_MAX = 10
 PROXY_SCHEMES = ("socks5", "http")
@@ -155,6 +158,40 @@ def fill_default_credentials(path: str) -> bool:
     return True
 
 
+def fill_default_max_file_size(path: str) -> bool:
+    """Put the GUI's default per-file size limit into config.yaml if it has none.
+
+    An explicit 0 (no limit) is kept. Returns True when the file was changed.
+    """
+    data = _load(path)
+    if "max_file_size_mb" in data:
+        return False
+    data["max_file_size_mb"] = DEFAULT_MAX_FILE_SIZE_MB
+    _dump(path, data)
+    return True
+
+
+def validate_max_file_size(raw: Any) -> int:
+    """Parse the per-file size limit in MB (0 = no limit)."""
+    error = GuiError("单个文件最大值应为 0（不限）或正整数，单位 MB")
+    if raw is None or isinstance(raw, (bool, float)):
+        raise error
+    try:
+        value = int(str(raw).strip())
+    except ValueError as e:
+        raise error from e
+    if not 0 <= value <= MAX_FILE_SIZE_MB_LIMIT:
+        raise error
+    return value
+
+
+def write_max_file_size(path: str, max_file_size_mb: int) -> None:
+    """Store the per-file size limit; everything else in config.yaml is kept."""
+    data = _load(path)
+    data["max_file_size_mb"] = max_file_size_mb
+    _dump(path, data)
+
+
 def _validate_proxy(raw: Any) -> Optional[Dict[str, Any]]:
     """Normalize the proxy part of the form; None means no proxy."""
     if not raw:
@@ -258,6 +295,7 @@ def read_basic_config(app: Any) -> Dict[str, Any]:
         "save_path": app.save_path,
         "media_types": list(app.media_types),
         "max_download_task": app.max_download_task,
+        "max_file_size_mb": app.max_file_size_mb,
     }
 
 

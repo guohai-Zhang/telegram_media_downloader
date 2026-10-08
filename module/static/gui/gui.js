@@ -207,6 +207,8 @@ layui.use(['element', 'layer'], function () {
   function fillSettings(c) {
     var f = $('#settings_form');
     var p = c.proxy || {};
+    // shown on the chats page, saved together with the chat list
+    $('#max_file_size_mb').val(c.max_file_size_mb);
     f.find('[name=api_id]').val(c.api_id);
     f.find('[name=api_hash]').val(c.api_hash);
     f.find('[name=save_path]').val(c.save_path);
@@ -398,7 +400,8 @@ layui.use(['element', 'layer'], function () {
   });
   $('#btn_save_chats').on('click', function () {
     var ids = chatRows.filter(function (r) { return r.checked; }).map(function (r) { return r.key; });
-    api('POST', 'api/chats', { chat_ids: ids }).then(function () {
+    var payload = { chat_ids: ids, max_file_size_mb: $('#max_file_size_mb').val() };
+    api('POST', 'api/chats', payload).then(function () {
       toast('已保存 ' + ids.length + ' 个频道', true);
       refreshStatus();
     });

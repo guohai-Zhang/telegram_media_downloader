@@ -46,8 +46,10 @@ from module.gui_config import (
     read_chats,
     unique_chat_ids,
     validate_basic_config,
+    validate_max_file_size,
     write_basic_config,
     write_chats,
+    write_max_file_size,
 )
 
 CONNECT_TIMEOUT = 20
@@ -598,7 +600,7 @@ class Controller:
             )
         return result
 
-    def save_chats(self, chat_ids: List[ChatId]) -> None:
+    def save_chats(self, chat_ids: List[ChatId], max_file_size_mb: Any = None) -> None:
         """Save the selected chats, keeping progress of chats that stay selected.
 
         Repeated ids are dropped first: update_config maps
@@ -612,6 +614,9 @@ class Controller:
             isinstance(c, bool) or not isinstance(c, (int, str)) for c in chat_ids
         ):
             raise GuiError("频道列表格式不正确")
+        limit = None
+        if max_file_size_mb is not None:
+            limit = validate_max_file_size(max_file_size_mb)
         chat_ids = unique_chat_ids(chat_ids)
         with self._operation(State.READY):
             with self._state_lock:
@@ -627,6 +632,8 @@ class Controller:
                 read_chats(self._config_path), chat_ids, usernames, by_username
             )
             write_chats(self._config_path, chats)
+            if limit is not None:
+                write_max_file_size(self._config_path, limit)
             self._app.load_config()
 
     # ---- downloading

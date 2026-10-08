@@ -357,6 +357,7 @@ def _dump_atomic(data: dict, path: str) -> None:
 class Application:
     """Application load config and update config."""
 
+    # pylint: disable = R0915
     def __init__(
         self,
         config_file: str,
@@ -413,6 +414,8 @@ class Application:
         self.web_host: str = "0.0.0.0"
         self.web_port: int = 5000
         self.max_download_task: int = 5
+        # skip files larger than this many MB; 0 means no limit
+        self.max_file_size_mb: int = 0
         self.language = Language.EN
         self.after_upload_telegram_delete: bool = True
         self.web_login_secret: str = ""
@@ -518,6 +521,7 @@ class Application:
         self.max_download_task = _config.get(
             "max_download_task", self.max_download_task
         )
+        self.max_file_size_mb = get_config(_config, "max_file_size_mb", 0, int)
 
         self.max_concurrent_transmissions = self.max_download_task * 5
 
