@@ -703,6 +703,8 @@ async def stop_download():
         await asyncio.gather(*_run_tasks, return_exceptions=True)
         _run_tasks.clear()
     app.update_config()
+    # the run is over: empty the downloading list instead of leaving it frozen
+    reset_download_stat()
 
 
 def _exec_loop():

@@ -1193,6 +1193,17 @@ class DownloadLifecycleTestCase(unittest.TestCase):
             self.run_async(media_downloader.start_download(client))
             self.run_async(asyncio.wait_for(media_downloader.stop_download(), 1))
 
+    def test_stop_download_clears_the_downloading_list(self):
+        from module import download_stat
+
+        with mock.patch("media_downloader.download_all_chat", new=_noop), mock.patch(
+            "media_downloader.worker", new=_noop
+        ):
+            self.run_async(media_downloader.start_download(mock.Mock(spec=[])))
+        download_stat.get_download_result()[8654123] = {5: {"down_byte": 1}}
+        self.run_async(media_downloader.stop_download())
+        self.assertEqual(download_stat.get_download_result(), {})
+
     def test_start_download_applies_concurrency(self):
         class Client:
             max_concurrent_transmissions = 1
