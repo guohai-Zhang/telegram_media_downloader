@@ -206,11 +206,18 @@ layui.use(['element', 'layer'], function () {
     $('#proxy_fields').toggle(!!$('#settings_form [name=proxy_scheme]').val());
   }
 
+  function toggleDuplicateMinSize() {
+    $('#duplicate_min_size_row').toggle($('#skip_duplicate_media').prop('checked'));
+  }
+
   function fillSettings(c) {
     var f = $('#settings_form');
     var p = c.proxy || {};
     // shown on the chats page, saved together with the chat list
     $('#max_file_size_mb').val(c.max_file_size_mb);
+    $('#skip_duplicate_media').prop('checked', !!c.skip_duplicate_media);
+    $('#duplicate_min_size_mb').val(c.duplicate_min_size_mb);
+    toggleDuplicateMinSize();
     f.find('[name=api_id]').val(c.api_id);
     f.find('[name=api_hash]').val(c.api_hash);
     f.find('[name=save_path]').val(c.save_path);
@@ -405,6 +412,7 @@ layui.use(['element', 'layer'], function () {
       toast('已添加「' + info.title + '」，记得点保存', true);
     });
   });
+  $('#skip_duplicate_media').on('change', toggleDuplicateMinSize);
   $('#btn_save_chats').on('click', function () {
     var ids = chatRows.filter(function (r) { return r.checked; }).map(function (r) { return r.key; });
     var months = {};
@@ -413,7 +421,13 @@ layui.use(['element', 'layer'], function () {
         months[String(r.key)] = r.startMonth || '';
       }
     });
-    var payload = { chat_ids: ids, max_file_size_mb: $('#max_file_size_mb').val(), start_months: months };
+    var payload = {
+      chat_ids: ids,
+      max_file_size_mb: $('#max_file_size_mb').val(),
+      start_months: months,
+      skip_duplicate_media: $('#skip_duplicate_media').prop('checked'),
+      duplicate_min_size_mb: $('#duplicate_min_size_mb').val()
+    };
     api('POST', 'api/chats', payload).then(function () {
       toast('已保存 ' + ids.length + ' 个频道', true);
       refreshStatus();

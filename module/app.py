@@ -429,6 +429,9 @@ class Application:
         self.max_download_task: int = 5
         # skip files larger than this many MB; 0 means no limit
         self.max_file_size_mb: int = 0
+        # skip a file already downloaded from the same chat (see media_index)
+        self.skip_duplicate_media: bool = True
+        self.duplicate_min_size_mb: int = 1
         self.language = Language.EN
         self.after_upload_telegram_delete: bool = True
         self.web_login_secret: str = ""
@@ -535,6 +538,12 @@ class Application:
             "max_download_task", self.max_download_task
         )
         self.max_file_size_mb = get_config(_config, "max_file_size_mb", 0, int)
+        self.skip_duplicate_media = get_config(
+            _config, "skip_duplicate_media", True, bool
+        )
+        self.duplicate_min_size_mb = get_config(
+            _config, "duplicate_min_size_mb", 1, int
+        )
 
         self.max_concurrent_transmissions = self.max_download_task * 5
 

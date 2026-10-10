@@ -193,6 +193,37 @@ def write_max_file_size(path: str, max_file_size_mb: int) -> None:
     _dump(path, data)
 
 
+def validate_skip_duplicate_media(raw: Any) -> bool:
+    """Parse the skip-duplicates switch; only a real boolean is accepted."""
+    if not isinstance(raw, bool):
+        raise GuiError("跳过重复文件的开关格式不正确")
+    return raw
+
+
+def validate_duplicate_min_size(raw: Any) -> int:
+    """Parse the smallest size in MB that the same-size duplicate rule covers."""
+    error = GuiError("按大小判重的最小文件应为正整数，单位 MB")
+    if raw is None or isinstance(raw, (bool, float)):
+        raise error
+    try:
+        value = int(str(raw).strip())
+    except ValueError as e:
+        raise error from e
+    if not 1 <= value <= MAX_FILE_SIZE_MB_LIMIT:
+        raise error
+    return value
+
+
+def write_duplicate_options(
+    path: str, skip_duplicate_media: bool, duplicate_min_size_mb: int
+) -> None:
+    """Store the duplicate-skip options; everything else in config.yaml is kept."""
+    data = _load(path)
+    data["skip_duplicate_media"] = skip_duplicate_media
+    data["duplicate_min_size_mb"] = duplicate_min_size_mb
+    _dump(path, data)
+
+
 def validate_start_months(raw: Any) -> Dict[str, str]:
     """Parse {chat_id: "YYYY-MM" or ""} from the chats page ("" clears it).
 
@@ -338,6 +369,8 @@ def read_basic_config(app: Any) -> Dict[str, Any]:
         "media_types": list(app.media_types),
         "max_download_task": app.max_download_task,
         "max_file_size_mb": app.max_file_size_mb,
+        "skip_duplicate_media": app.skip_duplicate_media,
+        "duplicate_min_size_mb": app.duplicate_min_size_mb,
     }
 
 

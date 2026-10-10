@@ -942,6 +942,37 @@ class FileSizeLimitTestCase(ControllerTestBase):
             self.controller.save_chats([-1001], -5)
 
 
+class DuplicateOptionsControllerTestCase(ControllerTestBase):
+    def ready_with_dialog(self):
+        self.ready_controller()
+        self.client.dialogs = [SimpleNamespace(chat=make_chat(-1001, "News"))]
+        self.controller.list_dialogs()
+
+    def test_defaults_shown_before_saving(self):
+        self.ready_with_dialog()
+        config = self.controller.get_config()
+        self.assertIs(config["skip_duplicate_media"], True)
+        self.assertEqual(config["duplicate_min_size_mb"], 1)
+
+    def test_save_chats_saves_duplicate_options(self):
+        self.ready_with_dialog()
+        self.controller.save_chats([-1001], None, None, False, "20")
+        self.assertIs(self.app.skip_duplicate_media, False)
+        self.assertEqual(self.app.duplicate_min_size_mb, 20)
+        config = self.controller.get_config()
+        self.assertIs(config["skip_duplicate_media"], False)
+        self.assertEqual(config["duplicate_min_size_mb"], 20)
+        # omitted options keep their saved values
+        self.controller.save_chats([-1001])
+        self.assertIs(self.app.skip_duplicate_media, False)
+        self.assertEqual(self.app.duplicate_min_size_mb, 20)
+
+    def test_invalid_duplicate_options_are_rejected(self):
+        self.ready_with_dialog()
+        with self.assertRaises(GuiError):
+            self.controller.save_chats([-1001], None, None, "yes")
+        with self.assertRaises(GuiError):
+            self.controller.save_chats([-1001], None, None, True, 0)
 class StartMonthControllerTestCase(ControllerTestBase):
     def test_save_chats_with_start_months(self):
         self.ready_controller()

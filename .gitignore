@@ -68,5 +68,7 @@ log/
 temp/
 config.yaml
 data.yaml
+media_index.json
 *.scss
 *.css.map
+.serena/

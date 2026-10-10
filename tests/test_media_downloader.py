@@ -27,6 +27,7 @@ from media_downloader import (
 )
 from module.app import Application, ChatDownloadConfig, DownloadStatus, TaskNode
 from module.cloud_drive import CloudDriveConfig
+from module.media_index import MediaIndex
 from module.pyrogram_extension import (
     get_extension,
     record_download_status,
@@ -122,6 +123,8 @@ def rest_app(conf: dict):
     app.config = conf
     app.assign_config(conf)
     app.assign_app_data(conf)
+    # in memory, so tests never write media_index.json
+    media_downloader._media_index = MediaIndex(None, 1024 * 1024)
 
 
 def mock_manage_duplicate_file(file_path: str) -> str:
@@ -1146,6 +1149,118 @@ async def _noop(*_args, **_kwargs):
 
 async def _sleep_forever(*_args, **_kwargs):
     await asyncio.sleep(3600)
+
+
+@mock.patch("media_downloader.fetch_message", new=new_fetch_message)
+@mock.patch("media_downloader._move_to_download_path", new=mock_move_to_download_path)
+@mock.patch("media_downloader._check_download_finish", new=mock_check_download_finish)
+class DuplicateMediaTestCase(unittest.TestCase):
+    """Within one chat, a file already downloaded is not downloaded again."""
+
+    MB = 1024 * 1024
+
+    def setUp(self):
+        reset_download_cache()
+        rest_app(MOCK_CONF)
+        self.loop = app.loop
+        self.downloads: List[str] = []
+        downloads = self.downloads
+
+        class RecordingClient(MockClient):
+            async def download_media(self, *args, **kwargs):
+                await asyncio.sleep(0)
+                downloads.append(kwargs.get("file_name"))
+                return kwargs.get("file_name")
+
+        self.client = RecordingClient()
+
+    def tearDown(self):
+        rest_app(MOCK_CONF)
+
+    def message(self, msg_id, month, **video):
+        video.setdefault("file_size", 50 * self.MB)
+        return MockMessage(
+            id=msg_id,
+            media=True,
+            chat_title="dup_test",
+            date=datetime(2024, month, 1),
+            video=MockVideo(
+                file_name=f"clip{msg_id}.mp4", mime_type="video/mp4", **video
+            ),
+        )
+
+    def download(self, message, chat_id=-123):
+        return self.loop.run_until_complete(
+            async_download_media(
+                self.client, message, ["video"], {"video": ["all"]}, chat_id
+            )
+        )
+
+    def test_reposted_file_in_a_later_month_is_skipped(self):
+        first = self.download(self.message(1, 3, file_unique_id="A"))
+        second = self.download(self.message(2, 5, file_unique_id="A"))
+        self.assertEqual(first[0], DownloadStatus.SuccessDownload)
+        self.assertEqual(second, (DownloadStatus.SkipDownload, None))
+        self.assertEqual(len(self.downloads), 1)
+
+    def test_reupload_with_same_size_and_duration_is_skipped(self):
+        self.download(self.message(1, 3, file_unique_id="A", duration=600))
+        second = self.download(self.message(2, 5, file_unique_id="B", duration=600))
+        self.assertEqual(second, (DownloadStatus.SkipDownload, None))
+
+    def test_same_size_different_duration_downloads(self):
+        self.download(self.message(1, 3, file_unique_id="A", duration=600))
+        second = self.download(self.message(2, 5, file_unique_id="B", duration=601))
+        self.assertEqual(second[0], DownloadStatus.SuccessDownload)
+
+    def test_same_file_in_another_chat_downloads(self):
+        self.download(self.message(1, 3, file_unique_id="A"), chat_id=-1)
+        second = self.download(self.message(2, 5, file_unique_id="A"), chat_id=-2)
+        self.assertEqual(second[0], DownloadStatus.SuccessDownload)
+
+    def test_failed_download_is_not_a_duplicate_source(self):
+        class FailingClient(MockClient):
+            async def download_media(self, *args, **kwargs):
+                raise ValueError("boom")
+
+        failed = self.loop.run_until_complete(
+            async_download_media(
+                FailingClient(),
+                self.message(1, 3, file_unique_id="A"),
+                ["video"],
+                {"video": ["all"]},
+            )
+        )
+        self.assertEqual(failed[0], DownloadStatus.FailedDownload)
+        second = self.download(self.message(2, 5, file_unique_id="A"))
+        self.assertEqual(second[0], DownloadStatus.SuccessDownload)
+
+    def test_concurrent_copies_download_once(self):
+        async def both():
+            return await asyncio.gather(
+                async_download_media(
+                    self.client,
+                    self.message(1, 3, file_unique_id="A"),
+                    ["video"],
+                    {"video": ["all"]},
+                ),
+                async_download_media(
+                    self.client,
+                    self.message(2, 5, file_unique_id="A"),
+                    ["video"],
+                    {"video": ["all"]},
+                ),
+            )
+
+        results = self.loop.run_until_complete(both())
+        self.assertEqual(len(self.downloads), 1)
+        self.assertIn((DownloadStatus.SkipDownload, None), results)
+
+    def test_disabled_downloads_every_copy(self):
+        app.skip_duplicate_media = False
+        self.download(self.message(1, 3, file_unique_id="A"))
+        second = self.download(self.message(2, 5, file_unique_id="A"))
+        self.assertEqual(second[0], DownloadStatus.SuccessDownload)
 
 
 class DownloadLifecycleTestCase(unittest.TestCase):

@@ -16,6 +16,7 @@ from module.bot import start_download_bot, stop_download_bot
 from module.download_stat import reset_download_stat, update_download_status
 from module.get_chat_history_v2 import get_chat_history_v2
 from module.language import _t
+from module.media_index import MediaIndex, MediaInfo
 from module.pyrogram_extension import (
     HookClient,
     fetch_message,
@@ -50,6 +51,8 @@ RETRY_TIME_OUT = 3
 # max messages Telegram returns from one get_messages call
 RETRY_FETCH_BATCH = 200
 _run_tasks: List[asyncio.Task] = []
+MEDIA_INDEX_FILE_NAME = "media_index.json"
+_media_index: Optional[MediaIndex] = None
 
 logging.getLogger("pyrogram.session.session").addFilter(LogFilter())
 logging.getLogger("pyrogram.client").addFilter(LogFilter())
@@ -357,7 +360,48 @@ def _exceeds_size_limit(media_size: int) -> bool:
     return bool(limit_mb) and (media_size or 0) > limit_mb * 1024 * 1024
 
 
-# pylint: disable = R0911
+def _get_media_index() -> MediaIndex:
+    """The duplicate index, kept next to data.yaml and loaded on first use."""
+    global _media_index  # pylint: disable = W0603
+    min_size = app.duplicate_min_size_mb * 1024 * 1024
+    if _media_index is None:
+        _media_index = MediaIndex(
+            os.path.join(os.path.abspath("."), MEDIA_INDEX_FILE_NAME), min_size
+        )
+    # the GUI can change it between runs without restarting
+    _media_index.min_size = min_size
+    return _media_index
+
+
+def _chat_save_root(file_name: str) -> Optional[str]:
+    """The chat's own download folder, when chat_title leads the save path.
+
+    With another prefix first (media_type, media_datetime) the chat's files
+    are spread across folders shared with other chats, so none is returned.
+    """
+    if not app.file_path_prefix or app.file_path_prefix[0] != "chat_title":
+        return None
+    rel = os.path.relpath(file_name, app.save_path)
+    if rel.startswith(os.pardir):
+        return None
+    return os.path.join(app.save_path, rel.split(os.sep)[0])
+
+
+def _find_duplicate(
+    chat_key: str, message: pyrogram.types.Message, info: MediaInfo, file_name: str
+) -> Optional[str]:
+    """What this media duplicates in the chat; claims it when it is new."""
+    index = _get_media_index()
+    root = _chat_save_root(file_name)
+    if root:
+        index.seed(chat_key, root)
+    duplicate = index.find(chat_key, message.id, info)
+    if not duplicate:
+        index.reserve(chat_key, message.id, info)
+    return duplicate
+
+
+# pylint: disable = R0911,R1702
 @record_download_status
 async def download_media(
     client: pyrogram.client.Client,
@@ -406,6 +450,9 @@ async def download_media(
     media_size = 0
     _media = None
     message = await fetch_message(client, message)
+    chat_key = str(
+        message.chat.id if message.chat and message.chat.id else node.chat_id
+    )
     try:
         for _type in media_types:
             _media = getattr(message, _type, None)
@@ -428,6 +475,12 @@ async def download_media(
                             f"id={message.id} {ui_file_name} "
                             f"{_t('already download,download skipped')}.\n"
                         )
+                        if app.skip_duplicate_media:
+                            _get_media_index().add(
+                                chat_key,
+                                message.id,
+                                MediaInfo.from_media(_media, file_name),
+                            )
 
                         return DownloadStatus.SkipDownload, None
             else:
@@ -455,64 +508,87 @@ async def download_media(
 
     message_id = message.id
 
-    for retry in range(3):
-        try:
-            temp_download_path = await client.download_media(
-                message,
-                file_name=temp_file_name,
-                progress=update_download_status,
-                progress_args=(
-                    message_id,
-                    ui_file_name,
-                    task_start_time,
-                    node,
-                    client,
-                ),
+    reserved = False
+    if app.skip_duplicate_media:
+        info = MediaInfo.from_media(_media, file_name)
+        duplicate = _find_duplicate(chat_key, message, info, file_name)
+        if duplicate:
+            logger.info(
+                f"id={message.id} {ui_file_name} duplicates {duplicate}, "
+                "download skipped.\n"
             )
+            return DownloadStatus.SkipDownload, None
+        reserved = True
 
-            if temp_download_path and isinstance(temp_download_path, str):
-                _check_download_finish(media_size, temp_download_path, ui_file_name)
-                await asyncio.sleep(0.5)
-                _move_to_download_path(temp_download_path, file_name)
-                # TODO: if not exist file size or media
-                return DownloadStatus.SuccessDownload, file_name
-        except pyrogram.errors.exceptions.bad_request_400.BadRequest:
-            logger.warning(
-                f"Message[{message.id}]: {_t('file reference expired, refetching')}..."
-            )
-            await asyncio.sleep(RETRY_TIME_OUT)
-            message = await fetch_message(client, message)
-            if _check_timeout(retry, message.id):
+    downloaded = False
+    try:
+        for retry in range(3):
+            try:
+                temp_download_path = await client.download_media(
+                    message,
+                    file_name=temp_file_name,
+                    progress=update_download_status,
+                    progress_args=(
+                        message_id,
+                        ui_file_name,
+                        task_start_time,
+                        node,
+                        client,
+                    ),
+                )
+
+                if temp_download_path and isinstance(temp_download_path, str):
+                    _check_download_finish(media_size, temp_download_path, ui_file_name)
+                    await asyncio.sleep(0.5)
+                    _move_to_download_path(temp_download_path, file_name)
+                    # TODO: if not exist file size or media
+                    downloaded = True
+                    return DownloadStatus.SuccessDownload, file_name
+            except pyrogram.errors.exceptions.bad_request_400.BadRequest:
+                logger.warning(
+                    f"Message[{message.id}]: "
+                    f"{_t('file reference expired, refetching')}..."
+                )
+                await asyncio.sleep(RETRY_TIME_OUT)
+                message = await fetch_message(client, message)
+                if _check_timeout(retry, message.id):
+                    # pylint: disable = C0301
+                    logger.error(
+                        f"Message[{message.id}]: "
+                        f"{_t('file reference expired for 3 retries, download skipped.')}"
+                    )
+            except pyrogram.errors.exceptions.flood_420.FloodWait as wait_err:
+                await asyncio.sleep(wait_err.value)
+                logger.warning("Message[{}]: FlowWait {}", message.id, wait_err.value)
+                _check_timeout(retry, message.id)
+            except TypeError:
+                # pylint: disable = C0301
+                logger.warning(
+                    f"{_t('Timeout Error occurred when downloading Message')}[{message.id}], "
+                    f"{_t('retrying after')} {RETRY_TIME_OUT} {_t('seconds')}"
+                )
+                await asyncio.sleep(RETRY_TIME_OUT)
+                if _check_timeout(retry, message.id):
+                    logger.error(
+                        f"Message[{message.id}]: {_t('Timing out after 3 reties, download skipped.')}"
+                    )
+            except Exception as e:
                 # pylint: disable = C0301
                 logger.error(
                     f"Message[{message.id}]: "
-                    f"{_t('file reference expired for 3 retries, download skipped.')}"
+                    f"{_t('could not be downloaded due to following exception')}:\n[{e}].",
+                    exc_info=True,
                 )
-        except pyrogram.errors.exceptions.flood_420.FloodWait as wait_err:
-            await asyncio.sleep(wait_err.value)
-            logger.warning("Message[{}]: FlowWait {}", message.id, wait_err.value)
-            _check_timeout(retry, message.id)
-        except TypeError:
-            # pylint: disable = C0301
-            logger.warning(
-                f"{_t('Timeout Error occurred when downloading Message')}[{message.id}], "
-                f"{_t('retrying after')} {RETRY_TIME_OUT} {_t('seconds')}"
-            )
-            await asyncio.sleep(RETRY_TIME_OUT)
-            if _check_timeout(retry, message.id):
-                logger.error(
-                    f"Message[{message.id}]: {_t('Timing out after 3 reties, download skipped.')}"
-                )
-        except Exception as e:
-            # pylint: disable = C0301
-            logger.error(
-                f"Message[{message.id}]: "
-                f"{_t('could not be downloaded due to following exception')}:\n[{e}].",
-                exc_info=True,
-            )
-            break
+                break
 
-    return DownloadStatus.FailedDownload, None
+        return DownloadStatus.FailedDownload, None
+    finally:
+        # also runs when Stop cancels the task, so the claim never outlives it
+        if reserved:
+            if downloaded:
+                _get_media_index().commit(chat_key, message_id)
+            else:
+                _get_media_index().release(chat_key, message_id)
 
 
 def _load_config():

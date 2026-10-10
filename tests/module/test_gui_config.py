@@ -29,10 +29,13 @@ from module.gui_config import (
     set_start_months,
     unique_chat_ids,
     validate_basic_config,
+    validate_duplicate_min_size,
     validate_max_file_size,
+    validate_skip_duplicate_media,
     validate_start_months,
     write_basic_config,
     write_chats,
+    write_duplicate_options,
     write_max_file_size,
 )
 
@@ -294,6 +297,8 @@ class GuiConfigTestCase(unittest.TestCase):
                 "media_types": ["photo", "video"],
                 "max_download_task": 5,
                 "max_file_size_mb": 0,
+                "skip_duplicate_media": True,
+                "duplicate_min_size_mb": 1,
             },
         )
 
@@ -462,6 +467,38 @@ class MaxFileSizeTestCase(unittest.TestCase):
         self.assertEqual(load_yaml(self.config_path)["max_file_size_mb"], 0)
 
 
+class DuplicateOptionsTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.config_path = os.path.join(self.tmp, "config.yaml")
+        ensure_config_file(self.config_path, os.path.join(self.tmp, "dl"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_validate_skip_duplicate_media(self):
+        self.assertIs(validate_skip_duplicate_media(True), True)
+        self.assertIs(validate_skip_duplicate_media(False), False)
+        for bad in ("true", 1, None):
+            with self.subTest(bad=bad):
+                with self.assertRaises(GuiError):
+                    validate_skip_duplicate_media(bad)
+
+    def test_validate_duplicate_min_size(self):
+        self.assertEqual(validate_duplicate_min_size("10"), 10)
+        self.assertEqual(validate_duplicate_min_size(1), 1)
+        for bad in (0, -1, "abc", 1.5, True, None, 1_000_001):
+            with self.subTest(bad=bad):
+                with self.assertRaises(GuiError):
+                    validate_duplicate_min_size(bad)
+
+    def test_write_keeps_other_keys(self):
+        save_path = load_yaml(self.config_path)["save_path"]
+        write_duplicate_options(self.config_path, False, 10)
+        data = load_yaml(self.config_path)
+        self.assertIs(data["skip_duplicate_media"], False)
+        self.assertEqual(data["duplicate_min_size_mb"], 10)
+        self.assertEqual(data["save_path"], save_path)
 class StartMonthTestCase(unittest.TestCase):
     def test_validate_start_months(self):
         self.assertEqual(validate_start_months(None), {})

@@ -102,6 +102,7 @@ class MockVideo:
         self.file_name = kwargs.get("file_name")
         self.mime_type = kwargs["mime_type"]
         self.file_id = "VIDEO"
+        self.file_unique_id = kwargs.get("file_unique_id")
         if kwargs.get("file_size"):
             self.file_size = kwargs["file_size"]
         else:

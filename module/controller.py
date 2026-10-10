@@ -47,10 +47,13 @@ from module.gui_config import (
     set_start_months,
     unique_chat_ids,
     validate_basic_config,
+    validate_duplicate_min_size,
     validate_max_file_size,
+    validate_skip_duplicate_media,
     validate_start_months,
     write_basic_config,
     write_chats,
+    write_duplicate_options,
     write_max_file_size,
 )
 
@@ -608,6 +611,8 @@ class Controller:
         chat_ids: List[ChatId],
         max_file_size_mb: Any = None,
         start_months: Any = None,
+        skip_duplicate_media: Any = None,
+        duplicate_min_size_mb: Any = None,
     ) -> None:
         """Save the selected chats, keeping progress of chats that stay selected.
 
@@ -626,6 +631,12 @@ class Controller:
         if max_file_size_mb is not None:
             limit = validate_max_file_size(max_file_size_mb)
         months = validate_start_months(start_months)
+        skip_duplicates = None
+        if skip_duplicate_media is not None:
+            skip_duplicates = validate_skip_duplicate_media(skip_duplicate_media)
+        min_size = None
+        if duplicate_min_size_mb is not None:
+            min_size = validate_duplicate_min_size(duplicate_min_size_mb)
         chat_ids = unique_chat_ids(chat_ids)
         with self._operation(State.READY):
             with self._state_lock:
@@ -644,6 +655,14 @@ class Controller:
             write_chats(self._config_path, chats)
             if limit is not None:
                 write_max_file_size(self._config_path, limit)
+            if skip_duplicates is not None or min_size is not None:
+                write_duplicate_options(
+                    self._config_path,
+                    self._app.skip_duplicate_media
+                    if skip_duplicates is None
+                    else skip_duplicates,
+                    self._app.duplicate_min_size_mb if min_size is None else min_size,
+                )
             self._app.load_config()
 
     # ---- downloading
