@@ -26,7 +26,6 @@ ChatId = Union[int, str]
 DEFAULT_API_ID = 2040
 DEFAULT_API_HASH = "b18441a1ff607e10a989891a5462e627"
 
-DEFAULT_MAX_FILE_SIZE_MB = 200
 MAX_FILE_SIZE_MB_LIMIT = 1_000_000
 
 MAX_DOWNLOAD_TASK_MIN = 1
@@ -159,38 +158,44 @@ def fill_default_credentials(path: str) -> bool:
     return True
 
 
-def fill_default_max_file_size(path: str) -> bool:
-    """Put the GUI's default per-file size limit into config.yaml if it has none.
+def drop_global_max_file_size(path: str) -> bool:
+    """Remove the global max_file_size_mb that older GUI builds filled in.
 
-    An explicit 0 (no limit) is kept. Returns True when the file was changed.
+    The GUI now sets the limit per chat with no limit by default, and a
+    leftover global value would silently cap every chat without the GUI
+    showing it. Returns True when the file was changed.
     """
     data = _load(path)
-    if "max_file_size_mb" in data:
+    if "max_file_size_mb" not in data:
         return False
-    data["max_file_size_mb"] = DEFAULT_MAX_FILE_SIZE_MB
+    del data["max_file_size_mb"]
     _dump(path, data)
     return True
 
 
-def validate_max_file_size(raw: Any) -> int:
-    """Parse the per-file size limit in MB (0 = no limit)."""
-    error = GuiError("单个文件最大值应为 0（不限）或正整数，单位 MB")
-    if raw is None or isinstance(raw, (bool, float)):
-        raise error
-    try:
-        value = int(str(raw).strip())
-    except ValueError as e:
-        raise error from e
-    if not 0 <= value <= MAX_FILE_SIZE_MB_LIMIT:
-        raise error
-    return value
+def validate_max_file_sizes(raw: Any) -> Dict[str, int]:
+    """Parse {chat_id: MB} from the chats page; "" or 0 means no limit.
 
-
-def write_max_file_size(path: str, max_file_size_mb: int) -> None:
-    """Store the per-file size limit; everything else in config.yaml is kept."""
-    data = _load(path)
-    data["max_file_size_mb"] = max_file_size_mb
-    _dump(path, data)
+    Keys are normalized like chat ids/usernames elsewhere in this module.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise GuiError("单个文件最大值格式不正确")
+    error = GuiError("单个文件最大值应为正整数（单位 MB），留空表示不限")
+    result: Dict[str, int] = {}
+    for key, value in raw.items():
+        if isinstance(value, (bool, float)):
+            raise error
+        text = "" if value is None else str(value).strip()
+        try:
+            limit = int(text) if text else 0
+        except ValueError as e:
+            raise error from e
+        if not 0 <= limit <= MAX_FILE_SIZE_MB_LIMIT:
+            raise error
+        result[_norm(key)] = limit
+    return result
 
 
 def validate_skip_duplicate_media(raw: Any) -> bool:
@@ -242,27 +247,41 @@ def validate_start_months(raw: Any) -> Dict[str, str]:
     return result
 
 
-def set_start_months(
-    chats: List[Any], start_months: Dict[str, str], usernames: Dict[Any, str]
+def _set_chat_field(
+    chats: List[Any], field: str, values: Dict[str, Any], usernames: Dict[Any, str]
 ) -> None:
-    """Write each chat's start_month into its saved entry ("" removes it).
+    """Write `field` into each chat's saved entry (a falsy value removes it).
 
-    `start_months` comes from validate_start_months; an entry matches by its
-    chat id or, for chats saved by username, by that username.
+    `values` is keyed like `_norm`; an entry matches by its chat id or, for
+    chats saved by username, by that username.
     """
     names = {_norm(k): _norm(v) for k, v in usernames.items() if v}
-    for key, month in start_months.items():
+    for key, value in values.items():
         wanted = {key}
         if key in names:
             wanted.add(names[key])
         for item in chats:
             if _norm(item.get("chat_id", "")) not in wanted:
                 continue
-            if month:
-                item["start_month"] = month
-            elif "start_month" in item:
-                del item["start_month"]
+            if value:
+                item[field] = value
+            elif field in item:
+                del item[field]
             break
+
+
+def set_start_months(
+    chats: List[Any], start_months: Dict[str, str], usernames: Dict[Any, str]
+) -> None:
+    """Write each chat's start_month (from validate_start_months; "" removes it)."""
+    _set_chat_field(chats, "start_month", start_months, usernames)
+
+
+def set_max_file_sizes(
+    chats: List[Any], max_file_sizes: Dict[str, int], usernames: Dict[Any, str]
+) -> None:
+    """Write each chat's max_file_size_mb (from validate_max_file_sizes; 0 removes it)."""
+    _set_chat_field(chats, "max_file_size_mb", max_file_sizes, usernames)
 
 
 def _validate_proxy(raw: Any) -> Optional[Dict[str, Any]]:
@@ -368,7 +387,6 @@ def read_basic_config(app: Any) -> Dict[str, Any]:
         "save_path": app.save_path,
         "media_types": list(app.media_types),
         "max_download_task": app.max_download_task,
-        "max_file_size_mb": app.max_file_size_mb,
         "skip_duplicate_media": app.skip_duplicate_media,
         "duplicate_min_size_mb": app.duplicate_min_size_mb,
     }

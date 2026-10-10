@@ -70,6 +70,7 @@ layui.use(['element', 'layer'], function () {
     saved = saved || [];
     var checkedById = {};
     var monthById = {};
+    var sizeById = {};
     var extra = [];
     saved.forEach(function (c) {
       var normKey = normalizeKey(c.chat_id);
@@ -82,12 +83,13 @@ layui.use(['element', 'layer'], function () {
       if (match) {
         checkedById[String(match.id)] = true;
         monthById[String(match.id)] = c.start_month || '';
+        sizeById[String(match.id)] = c.max_file_size_mb || '';
       } else {
-        extra.push({ key: c.chat_id, title: c.title, type: '', username: '', checked: true, startMonth: c.start_month || '' });
+        extra.push({ key: c.chat_id, title: c.title, type: '', username: '', checked: true, startMonth: c.start_month || '', maxSize: c.max_file_size_mb || '' });
       }
     });
     return extra.concat(dialogs.map(function (d) {
-      return { key: d.id, title: d.title, type: d.type, username: d.username, checked: !!checkedById[String(d.id)], startMonth: monthById[String(d.id)] || '' };
+      return { key: d.id, title: d.title, type: d.type, username: d.username, checked: !!checkedById[String(d.id)], startMonth: monthById[String(d.id)] || '', maxSize: sizeById[String(d.id)] || '' };
     }));
   }
 
@@ -214,7 +216,6 @@ layui.use(['element', 'layer'], function () {
     var f = $('#settings_form');
     var p = c.proxy || {};
     // shown on the chats page, saved together with the chat list
-    $('#max_file_size_mb').val(c.max_file_size_mb);
     $('#skip_duplicate_media').prop('checked', !!c.skip_duplicate_media);
     $('#duplicate_min_size_mb').val(c.duplicate_min_size_mb);
     toggleDuplicateMinSize();
@@ -321,6 +322,8 @@ layui.use(['element', 'layer'], function () {
         (row.username ? '<span class="gui-tip">@' + esc(row.username) + '</span>' : '') +
         '<input class="layui-input gui-month" data-month-index="' + index + '" maxlength="7" ' +
         'placeholder="起始年月 如 2024-06" value="' + esc(row.startMonth || '') + '">' +
+        '<input class="layui-input gui-size" type="number" min="0" data-size-index="' + index + '" ' +
+        'placeholder="大小上限 MB" title="单个文件最大（MB），留空不限" value="' + esc(String(row.maxSize || '')) + '">' +
         '</label>';
     }).join('');
     $('#chat_list').html(html || '<p class="gui-tip">没有找到频道或群组。</p>');
@@ -381,6 +384,9 @@ layui.use(['element', 'layer'], function () {
   $('#chat_list').on('input change', 'input.gui-month', function () {
     chatRows[Number(this.getAttribute('data-month-index'))].startMonth = $.trim(this.value);
   });
+  $('#chat_list').on('input change', 'input.gui-size', function () {
+    chatRows[Number(this.getAttribute('data-size-index'))].maxSize = $.trim(this.value);
+  });
   $('#chat_list').on('change', 'input[type=checkbox]', function () {
     chatRows[Number(this.getAttribute('data-index'))].checked = this.checked;
     $('#chat_selected').text('已选 ' + selectedCount() + ' 个');
@@ -405,7 +411,7 @@ layui.use(['element', 'layer'], function () {
         existing.username = info.username;
         existing.checked = true;
       } else {
-        chatRows.unshift({ key: info.id, title: info.title, type: info.type, username: info.username, checked: true, startMonth: '' });
+        chatRows.unshift({ key: info.id, title: info.title, type: info.type, username: info.username, checked: true, startMonth: '', maxSize: '' });
       }
       $('#chat_link').val('');
       renderChats();
@@ -416,14 +422,16 @@ layui.use(['element', 'layer'], function () {
   $('#btn_save_chats').on('click', function () {
     var ids = chatRows.filter(function (r) { return r.checked; }).map(function (r) { return r.key; });
     var months = {};
+    var sizes = {};
     chatRows.forEach(function (r) {
       if (r.checked) {
         months[String(r.key)] = r.startMonth || '';
+        sizes[String(r.key)] = r.maxSize || '';
       }
     });
     var payload = {
       chat_ids: ids,
-      max_file_size_mb: $('#max_file_size_mb').val(),
+      max_file_sizes: sizes,
       start_months: months,
       skip_duplicate_media: $('#skip_duplicate_media').prop('checked'),
       duplicate_min_size_mb: $('#duplicate_min_size_mb').val()

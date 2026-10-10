@@ -312,6 +312,9 @@ class ChatDownloadConfig:
         self.upload_telegram_chat_id: Union[int, str] = None
         # messages sent before this are skipped (config: start_month "YYYY-MM")
         self.start_date: Optional[datetime] = None
+        # per-chat file size limit in MB (config: max_file_size_mb); None = the
+        # global max_file_size_mb applies
+        self.max_file_size_mb: Optional[int] = None
         self.node: TaskNode = TaskNode(0)
 
 
@@ -324,6 +327,16 @@ def parse_start_month(value) -> Optional[datetime]:
     except ValueError:
         logger.warning(f"ignoring invalid start_month {value!r}, expected YYYY-MM")
         return None
+
+
+def parse_chat_max_file_size(value) -> Optional[int]:
+    """A chat's max_file_size_mb; missing, 0 or invalid -> None (not set)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        logger.warning(f"ignoring invalid chat max_file_size_mb {value!r}")
+        return None
+    return value or None
 
 
 def get_config(config, key, default=None, val_type=str, verbose=True):
@@ -642,6 +655,11 @@ class Application:
                     self.chat_download_config[
                         item["chat_id"]
                     ].start_date = parse_start_month(item.get("start_month"))
+                    self.chat_download_config[
+                        item["chat_id"]
+                    ].max_file_size_mb = parse_chat_max_file_size(
+                        item.get("max_file_size_mb")
+                    )
                     self.chat_download_config[
                         item["chat_id"]
                     ].upload_telegram_chat_id = item.get(

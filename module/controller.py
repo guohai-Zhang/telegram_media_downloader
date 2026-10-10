@@ -44,17 +44,17 @@ from module.gui_config import (
     parse_chat_link,
     read_basic_config,
     read_chats,
+    set_max_file_sizes,
     set_start_months,
     unique_chat_ids,
     validate_basic_config,
     validate_duplicate_min_size,
-    validate_max_file_size,
+    validate_max_file_sizes,
     validate_skip_duplicate_media,
     validate_start_months,
     write_basic_config,
     write_chats,
     write_duplicate_options,
-    write_max_file_size,
 )
 
 CONNECT_TIMEOUT = 20
@@ -602,6 +602,7 @@ class Controller:
                     "dialog_id": match["id"] if match else None,
                     "title": match["title"] if match else str(chat_id),
                     "start_month": str(item.get("start_month") or ""),
+                    "max_file_size_mb": item.get("max_file_size_mb") or "",
                 }
             )
         return result
@@ -609,7 +610,7 @@ class Controller:
     def save_chats(
         self,
         chat_ids: List[ChatId],
-        max_file_size_mb: Any = None,
+        max_file_sizes: Any = None,
         start_months: Any = None,
         skip_duplicate_media: Any = None,
         duplicate_min_size_mb: Any = None,
@@ -627,9 +628,7 @@ class Controller:
             isinstance(c, bool) or not isinstance(c, (int, str)) for c in chat_ids
         ):
             raise GuiError("频道列表格式不正确")
-        limit = None
-        if max_file_size_mb is not None:
-            limit = validate_max_file_size(max_file_size_mb)
+        limits = validate_max_file_sizes(max_file_sizes)
         months = validate_start_months(start_months)
         skip_duplicates = None
         if skip_duplicate_media is not None:
@@ -652,9 +651,8 @@ class Controller:
                 read_chats(self._config_path), chat_ids, usernames, by_username
             )
             set_start_months(chats, months, usernames)
+            set_max_file_sizes(chats, limits, usernames)
             write_chats(self._config_path, chats)
-            if limit is not None:
-                write_max_file_size(self._config_path, limit)
             if skip_duplicates is not None or min_size is not None:
                 write_duplicate_options(
                     self._config_path,

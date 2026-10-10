@@ -385,7 +385,7 @@ def api_save_chats(controller):
     body = _json()
     controller.save_chats(
         body.get("chat_ids"),
-        body.get("max_file_size_mb"),
+        body.get("max_file_sizes"),
         body.get("start_months"),
         body.get("skip_duplicate_media"),
         body.get("duplicate_min_size_mb"),

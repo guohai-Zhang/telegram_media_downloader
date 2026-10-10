@@ -178,6 +178,21 @@ class UpdateConfigFilesTestCase(unittest.TestCase):
         app.assign_config({"max_file_size_mb": 200})
         self.assertEqual(app.max_file_size_mb, 200)
 
+    def test_assign_config_per_chat_max_file_size(self):
+        app = Application("", "")
+        app.assign_config(
+            {
+                "chat": [
+                    {"chat_id": 1, "max_file_size_mb": 300},
+                    {"chat_id": 2},
+                    {"chat_id": 3, "max_file_size_mb": "abc"},
+                    {"chat_id": 4, "max_file_size_mb": 0},
+                ]
+            }
+        )
+        limits = {k: v.max_file_size_mb for k, v in app.chat_download_config.items()}
+        self.assertEqual(limits, {1: 300, 2: None, 3: None, 4: None})
+
     def test_start_month_parsing_and_skip_rule(self):
         from datetime import datetime as dt
 

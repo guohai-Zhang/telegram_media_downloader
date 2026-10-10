@@ -637,6 +637,7 @@ class ConfigAndDownloadTestCase(ControllerTestBase):
                     "dialog_id": -1005,
                     "title": "Mine",
                     "start_month": "",
+                    "max_file_size_mb": "",
                 }
             ],
         )
@@ -697,6 +698,7 @@ class ConfigAndDownloadTestCase(ControllerTestBase):
                     "dialog_id": -1001,
                     "title": "Mine",
                     "start_month": "",
+                    "max_file_size_mb": "",
                 }
             ],
         )
@@ -928,18 +930,27 @@ class FileSizeLimitTestCase(ControllerTestBase):
         self.client.dialogs = [SimpleNamespace(chat=make_chat(-1001, "News"))]
         self.controller.list_dialogs()
 
-    def test_save_chats_saves_max_file_size(self):
+    def test_no_limit_by_default(self):
         self.ready_with_dialog()
-        self.controller.save_chats([-1001], "300")
-        self.assertEqual(self.app.max_file_size_mb, 300)
-        self.assertEqual(self.controller.get_config()["max_file_size_mb"], 300)
         self.controller.save_chats([-1001])
-        self.assertEqual(self.app.max_file_size_mb, 300)
+        self.assertIsNone(self.app.chat_download_config[-1001].max_file_size_mb)
+        self.assertEqual(self.controller.current_chats()[0]["max_file_size_mb"], "")
+
+    def test_save_chats_saves_per_chat_max_file_size(self):
+        self.ready_with_dialog()
+        self.controller.save_chats([-1001], {"-1001": "300"})
+        self.assertEqual(self.app.chat_download_config[-1001].max_file_size_mb, 300)
+        self.assertEqual(self.controller.current_chats()[0]["max_file_size_mb"], 300)
+        # omitted keeps it, empty clears it
+        self.controller.save_chats([-1001])
+        self.assertEqual(self.app.chat_download_config[-1001].max_file_size_mb, 300)
+        self.controller.save_chats([-1001], {"-1001": ""})
+        self.assertIsNone(self.app.chat_download_config[-1001].max_file_size_mb)
 
     def test_invalid_max_file_size_is_rejected(self):
         self.ready_with_dialog()
         with self.assertRaises(GuiError):
-            self.controller.save_chats([-1001], -5)
+            self.controller.save_chats([-1001], {"-1001": -5})
 
 
 class DuplicateOptionsControllerTestCase(ControllerTestBase):
@@ -973,6 +984,8 @@ class DuplicateOptionsControllerTestCase(ControllerTestBase):
             self.controller.save_chats([-1001], None, None, "yes")
         with self.assertRaises(GuiError):
             self.controller.save_chats([-1001], None, None, True, 0)
+
+
 class StartMonthControllerTestCase(ControllerTestBase):
     def test_save_chats_with_start_months(self):
         self.ready_controller()

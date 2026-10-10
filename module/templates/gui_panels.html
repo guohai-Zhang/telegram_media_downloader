@@ -111,11 +111,6 @@
     <button type="button" class="layui-btn layui-btn-primary" id="btn_add_link">添加</button>
   </div>
   <div class="gui-row">
-    <label>单个文件最大</label>
-    <input class="layui-input gui-narrow" type="number" min="0" id="max_file_size_mb"> MB
-    <span class="gui-tip">超过的文件先跳过，调大后下次开始会补下；0 表示不限</span>
-  </div>
-  <div class="gui-row">
     <label>重复文件</label>
     <label><input type="checkbox" id="skip_duplicate_media"> 同一频道已下载过的不再下载</label>
   </div>
@@ -125,7 +120,7 @@
     <span class="gui-tip">转发、重发的同一个文件总会识别；这么大以上的文件，大小和时长完全相同也算重复</span>
   </div>
   <div class="gui-row">
-    <span class="gui-tip">每个频道后面可以填起始年月（如 2024-06），早于这个月的消息不下载；留空表示从头开始。</span>
+    <span class="gui-tip">每个频道后面可以填起始年月（如 2024-06），早于这个月的消息不下载，留空表示从头开始；还可以填单个文件大小上限（MB），超过的先跳过，调大后下次开始会补下，留空表示不限。</span>
   </div>
   <div class="gui-row">
     <button type="button" class="layui-btn" id="btn_save_chats">保存</button>

@@ -1142,6 +1142,49 @@ class MediaDownloaderTestCase(unittest.TestCase):
         # kept out of SkipDownload so it stays in ids_to_retry for a larger limit
         self.assertEqual(res, (DownloadStatus.FailedDownload, None))
 
+    def test_per_chat_size_limit_overrides_global(self):
+        rest_app(MOCK_CONF)
+        app.max_file_size_mb = 0
+        app.chat_download_config[-7] = ChatDownloadConfig()
+        app.chat_download_config[-7].max_file_size_mb = 1
+        app.chat_download_config[-8] = ChatDownloadConfig()
+
+        def big(msg_id):
+            return MockMessage(
+                id=msg_id,
+                media=True,
+                chat_title="test_size",
+                date=datetime(2019, 7, 25, 14, 53, 50),
+                video=MockVideo(
+                    file_name=f"big{msg_id}.mp4",
+                    mime_type="video/mp4",
+                    file_size=2 * 1024 * 1024,
+                ),
+            )
+
+        downloads = []
+
+        class CountingClient(MockClient):
+            async def download_media(self, *args, **kwargs):
+                downloads.append(1)
+                return None
+
+        limited = self.loop.run_until_complete(
+            async_download_media(
+                CountingClient(), big(901), ["video"], {"video": ["all"]}, -7
+            )
+        )
+        self.assertEqual(limited, (DownloadStatus.FailedDownload, None))
+        self.assertEqual(downloads, [])
+
+        self.loop.run_until_complete(
+            async_download_media(
+                CountingClient(), big(902), ["video"], {"video": ["all"]}, -8
+            )
+        )
+        # the unlimited chat reaches the download call
+        self.assertTrue(downloads)
+
 
 async def _noop(*_args, **_kwargs):
     return None

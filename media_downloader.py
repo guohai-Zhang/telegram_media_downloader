@@ -354,9 +354,16 @@ async def download_task(
 # pylint: disable = R0915,R0914
 
 
-def _exceeds_size_limit(media_size: int) -> bool:
-    """True when a max file size is configured and the file is larger."""
-    limit_mb = app.max_file_size_mb
+def _size_limit_mb(node: TaskNode) -> int:
+    """The chat's own max_file_size_mb, else the global one (0 = no limit)."""
+    chat_config = app.chat_download_config.get(node.chat_id)
+    if chat_config and chat_config.max_file_size_mb is not None:
+        return chat_config.max_file_size_mb
+    return app.max_file_size_mb
+
+
+def _exceeds_size_limit(media_size: int, limit_mb: int) -> bool:
+    """True when a max file size is set and the file is larger."""
     return bool(limit_mb) and (media_size or 0) > limit_mb * 1024 * 1024
 
 
@@ -486,10 +493,11 @@ async def download_media(
             else:
                 return DownloadStatus.SkipDownload, None
 
-            if _exceeds_size_limit(media_size):
+            limit_mb = _size_limit_mb(node)
+            if _exceeds_size_limit(media_size, limit_mb):
                 logger.info(
                     f"id={message.id} {ui_file_name} is larger than "
-                    f"max_file_size_mb={app.max_file_size_mb}, skipped for now.\n"
+                    f"max_file_size_mb={limit_mb}, skipped for now.\n"
                 )
                 # not SkipDownload: it stays in ids_to_retry, so raising the
                 # limit later downloads it on the next run

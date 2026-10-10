@@ -13,30 +13,29 @@ from module.app import DEFAULT_MEDIA_TYPES, Application
 from module.gui_config import (
     DEFAULT_API_HASH,
     DEFAULT_API_ID,
-    DEFAULT_MAX_FILE_SIZE_MB,
     GuiError,
     InvalidState,
+    drop_global_max_file_size,
     ensure_config_file,
     ensure_data_file,
     fill_default_credentials,
-    fill_default_max_file_size,
     find_chat,
     merge_chats,
     normalize_phone,
     parse_chat_link,
     read_basic_config,
     read_chats,
+    set_max_file_sizes,
     set_start_months,
     unique_chat_ids,
     validate_basic_config,
     validate_duplicate_min_size,
-    validate_max_file_size,
+    validate_max_file_sizes,
     validate_skip_duplicate_media,
     validate_start_months,
     write_basic_config,
     write_chats,
     write_duplicate_options,
-    write_max_file_size,
 )
 
 HASH = "0123456789abcdef0123456789abcdef"
@@ -296,7 +295,6 @@ class GuiConfigTestCase(unittest.TestCase):
                 "save_path": self.save_path,
                 "media_types": ["photo", "video"],
                 "max_download_task": 5,
-                "max_file_size_mb": 0,
                 "skip_duplicate_media": True,
                 "duplicate_min_size_mb": 1,
             },
@@ -449,22 +447,37 @@ class MaxFileSizeTestCase(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_validate_max_file_size(self):
-        self.assertEqual(validate_max_file_size("200"), 200)
-        self.assertEqual(validate_max_file_size(0), 0)
-        for bad in (-1, "abc", "1.5", 1.5, True, None, 1_000_001):
+    def test_validate_max_file_sizes(self):
+        self.assertEqual(validate_max_file_sizes(None), {})
+        self.assertEqual(
+            validate_max_file_sizes({"-1001": "200", "@MyChan": "", "-1002": 0}),
+            {"-1001": 200, "mychan": 0, "-1002": 0},
+        )
+        for bad in (-1, "abc", "1.5", 1.5, True, 1_000_001):
             with self.subTest(bad=bad):
                 with self.assertRaises(GuiError):
-                    validate_max_file_size(bad)
+                    validate_max_file_sizes({"1": bad})
+        with self.assertRaises(GuiError):
+            validate_max_file_sizes(["200"])
 
-    def test_default_applies_only_when_missing(self):
-        self.assertTrue(fill_default_max_file_size(self.config_path))
-        self.assertEqual(
-            load_yaml(self.config_path)["max_file_size_mb"], DEFAULT_MAX_FILE_SIZE_MB
-        )
-        write_max_file_size(self.config_path, 0)
-        self.assertFalse(fill_default_max_file_size(self.config_path))
-        self.assertEqual(load_yaml(self.config_path)["max_file_size_mb"], 0)
+    def test_set_max_file_sizes_sets_and_clears(self):
+        chats = [
+            {"chat_id": -1001, "last_read_message_id": 5, "max_file_size_mb": 100},
+            {"chat_id": "mychan", "last_read_message_id": 0},
+        ]
+        set_max_file_sizes(chats, {"-1001": 0, "-1005": 300}, {-1005: "MyChan"})
+        self.assertNotIn("max_file_size_mb", chats[0])
+        self.assertEqual(chats[1]["max_file_size_mb"], 300)
+        self.assertEqual(chats[0]["last_read_message_id"], 5)
+
+    def test_drop_global_max_file_size(self):
+        data = load_yaml(self.config_path)
+        data["max_file_size_mb"] = 200
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.YAML().dump(data, f)
+        self.assertTrue(drop_global_max_file_size(self.config_path))
+        self.assertNotIn("max_file_size_mb", load_yaml(self.config_path))
+        self.assertFalse(drop_global_max_file_size(self.config_path))
 
 
 class DuplicateOptionsTestCase(unittest.TestCase):
@@ -499,6 +512,8 @@ class DuplicateOptionsTestCase(unittest.TestCase):
         self.assertIs(data["skip_duplicate_media"], False)
         self.assertEqual(data["duplicate_min_size_mb"], 10)
         self.assertEqual(data["save_path"], save_path)
+
+
 class StartMonthTestCase(unittest.TestCase):
     def test_validate_start_months(self):
         self.assertEqual(validate_start_months(None), {})

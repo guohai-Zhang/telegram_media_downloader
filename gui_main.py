@@ -15,10 +15,10 @@ from typing import IO, Any, Optional
 from loguru import logger
 
 from module.gui_config import (
+    drop_global_max_file_size,
     ensure_config_file,
     ensure_data_file,
     fill_default_credentials,
-    fill_default_max_file_size,
 )
 
 APP_DIR_NAME = "TelegramMediaDownloader"
@@ -174,7 +174,7 @@ def _run(directory: str, log_dir: str, sink_id: int) -> int:
     ]
     notice = "；".join(n for n in notices if n)
     fill_default_credentials(config_path)
-    fill_default_max_file_size(config_path)
+    drop_global_max_file_size(config_path)
 
     # pylint: disable = import-outside-toplevel
     import webview
