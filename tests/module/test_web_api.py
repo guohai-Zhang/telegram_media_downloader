@@ -295,10 +295,14 @@ class WebApiTestCase(unittest.TestCase):
     def test_index_renders_gui_mode_flag(self):
         res = self.client.get("/")
         self.assertIn(b"static/gui/gui.js", res.data)
+        self.assertIn('lay-id="uploading">上传中'.encode(), res.data)
+        self.assertIn(b'id="upload_list"', res.data)
+        self.assertIn(b'id="upload_speed_title"', res.data)
         web._gui["controller"] = None
         web.get_flask_app().config["LOGIN_DISABLED"] = True
         res = self.client.get("/")
         self.assertNotIn(b"static/gui/gui.js", res.data)
+        self.assertNotIn(b'lay-id="uploading"', res.data)
 
     def test_index_renders_native_mode_flag(self):
         res = self.client.get("/")

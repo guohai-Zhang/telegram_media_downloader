@@ -36,6 +36,7 @@
         {% endif %}
         <li class="layui-this" lay-id="downloading">{{ '下载中' if gui_mode else 'Downloading' }}</li>
         <li lay-id="downloaded">{{ '已完成' if gui_mode else 'Downloaded' }}</li>
+        {% if gui_mode %}<li lay-id="uploading">上传中</li>{% endif %}
       </ul>
       <div class="stop-btn" id="download_state" data-value="{{ download_state }}" onclick="download_state_change(this)"> {{ download_state }} </div>
     </div>
@@ -47,6 +48,16 @@
       <div class="layui-tab-item">
         <table class="layui-hide" id="already_download_list" lay-filter="already_download_list"></table>
       </div>
+      {% if gui_mode %}
+      <div class="layui-tab-item" id="panel_uploading">
+        <p class="gui-upload-summary" id="upload_summary">当前没有上传任务</p>
+        <table class="layui-table gui-upload-table">
+          <colgroup><col width="160"><col width="90"><col><col width="100"><col width="220"><col width="110"></colgroup>
+          <thead><tr><th>频道</th><th>月份</th><th>文件名</th><th>大小</th><th>进度</th><th>速度</th></tr></thead>
+          <tbody id="upload_list"></tbody>
+        </table>
+      </div>
+      {% endif %}
     </div>
   </div>
 
@@ -66,9 +77,11 @@
       </div>
       <div class="layui-col-md3">
         <div style="padding: 5px; float: right;">
-          <!-- <i class="layui-icon layui-icon-upload-circle" style="font-size: 16px; color: #1E9FFF; font-weight: 700;">
+          {% if gui_mode %}
+          <i class="layui-icon layui-icon-upload-circle" style="font-size: 16px; color: #1E9FFF; font-weight: 700;">
             <i id="upload_speed_title" style="color: black;"> 0.00 B/s </i>
-          </i> -->
+          </i>
+          {% endif %}
 
           <i class="layui-icon layui-icon-download-circle"
             style="font-size: 16px; color: #5FB878; font-weight: 700; margin-left: 15px;">

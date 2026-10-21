@@ -182,6 +182,9 @@ class FakeDownloader:
     def run_phase(self):
         return self.phase
 
+    def upload_status(self):
+        return {"files": [], "speed": "0.00 B/s", "months": {}}
+
     def backup_status(self):
         return {}
 

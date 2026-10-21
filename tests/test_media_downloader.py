@@ -5,6 +5,7 @@ import platform
 import queue
 import sys
 import unittest
+from types import SimpleNamespace
 from datetime import datetime
 from typing import List, Union
 
@@ -1332,6 +1333,19 @@ class DownloadLifecycleTestCase(unittest.TestCase):
             self.run_async(media_downloader.stop_download())
             self.assertEqual(media_downloader._run_tasks, [])
             self.assertFalse(app.is_running)
+
+    def test_backup_only_run_allows_parallel_uploads(self):
+        # pyrogram defaults to one transfer at a time
+        client = SimpleNamespace(max_concurrent_transmissions=1)
+        backup = mock.Mock()
+        backup.run = _noop
+        app.max_concurrent_transmissions = 2
+        app.max_backup_task = 4
+        with mock.patch("media_downloader._get_saved_backup", return_value=backup):
+            self.run_async(media_downloader.start_backup(client))
+            self.run_async(media_downloader.stop_download())
+        self.assertEqual(client.max_concurrent_transmissions, 4)
+        self.assertEqual(client.save_file_semaphore._value, 4)
 
     def test_start_then_stop_twice(self):
         client = mock.Mock(spec=[])

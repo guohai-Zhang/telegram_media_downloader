@@ -27,3 +27,6 @@
 .gui-chat-row .gui-backup { flex: none; font-size: 12px; white-space: nowrap; }
 .gui-chat-row .gui-backup-month { flex: none; width: 150px; height: 28px; font-size: 12px; }
 .gui-backup-state { display: none; padding: 0 10px 6px 34px; font-size: 12px; border-bottom: 1px solid #f3f3f3; }
+.gui-upload-summary { margin: 10px; font-size: 13px; }
+.gui-upload-table { margin: 0 10px; width: calc(100% - 20px); }
+.gui-upload-table td { word-break: break-all; font-size: 12px; }

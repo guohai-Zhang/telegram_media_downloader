@@ -146,7 +146,7 @@ layui.use(['element', 'layer'], function () {
       return s.chat_count ? 'downloading' : 'chats';
     }
     if (s.state === 'downloading' && s.phase === 'backup') {
-      return 'chats';
+      return 'uploading';
     }
     return TAB_FOR_STATE[s.state];
   }
@@ -160,7 +160,7 @@ layui.use(['element', 'layer'], function () {
     }
     if (s.state === 'downloading' && s.phase === 'backup') {
       // a backup-only run, or a download run whose chats are all done
-      text = (s.progress.total ? '下载完成，' : '') + '正在备份到收藏…（进度见「频道」页）';
+      text = (s.progress.total ? '下载完成，' : '') + '正在上传到收藏 · ' + ((s.uploads && s.uploads.speed) || '0.00 B/s');
     } else if (s.state === 'downloading') {
       text += ' · 已处理 ' + s.progress.done + ' / ' + s.progress.total + ' 条消息' + ' · 已下载 ' + s.progress.downloaded + ' 个文件';
     }
@@ -217,6 +217,23 @@ layui.use(['element', 'layer'], function () {
     });
   }
 
+  // the 上传中 tab: like 下载中, one row per file with a progress bar
+  function renderUploads(u) {
+    u = u || { files: [], speed: '0.00 B/s', months: {} };
+    $('#upload_speed_title').text(u.speed);
+    var months = Object.keys(u.months || {}).map(function (k) { return u.months[k]; });
+    $('#upload_summary').text(u.files.length
+      ? '正在上传 ' + u.files.length + ' 个文件 · 总速度 ' + u.speed + (months.length ? ' · 本月进度 ' + months.join('、') : '')
+      : (status && status.phase === 'backup' ? '正在检查收藏夹里已有的文件…' : '当前没有上传任务'));
+    $('#upload_list').html(u.files.map(function (f) {
+      var p = esc(String(f.progress));
+      return '<tr><td>' + esc(f.chat) + '</td><td>' + esc(f.month) + '</td><td>' + esc(f.name) + '</td><td>' + esc(f.size) + '</td>' +
+        '<td><div class="layui-progress layui-progress-big"><div class="layui-progress-bar layui-bg-blue" style="width: ' + p + '%;">' +
+        '<span class="layui-progress-text">' + p + '%</span></div></div></td>' +
+        '<td>' + esc(f.speed) + '</td></tr>';
+    }).join(''));
+  }
+
   function refreshStatus() {
     return api('GET', 'api/status', undefined, true).then(function (s) {
       var changed = !status || status.state !== s.state;
@@ -224,6 +241,7 @@ layui.use(['element', 'layer'], function () {
       renderBar(s);
       renderAccount(s);
       renderBackup(s.backup);
+      renderUploads(s.uploads);
       $('#settings_form :input').prop('disabled', s.state === 'downloading' || s.state === 'stopping');
       if (changed) {
         if (!userPickedTab || s.state === 'downloading') {
@@ -512,8 +530,7 @@ layui.use(['element', 'layer'], function () {
       return;
     }
     button.prop('disabled', true);
-    // the chats page shows each chat's synced months and progress
-    api('POST', 'api/backup/start').then(function () { switchTab('chats'); }).always(refreshStatus);
+    api('POST', 'api/backup/start').then(function () { switchTab('uploading'); }).always(refreshStatus);
   });
 
   // index.html's inline handler has already switched the pause state with a

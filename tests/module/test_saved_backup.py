@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pyrogram
 
 from module.saved_backup import (
+    UploadTracker,
     BackupState,
     SavedBackup,
     caption_for,
@@ -35,6 +36,7 @@ class FakeClient:
         self.sent = []
         self.messages = {}
         self.video_kwargs = []
+        self.during_upload = None
 
     async def get_chat(self, chat_id):
         return SimpleNamespace(title=self.title)
@@ -53,8 +55,19 @@ class FakeClient:
         self.captions.append(caption)
         self.sent.append((kind, source))
 
-    async def send_video(self, chat_id, path, caption, parse_mode, **kwargs):
+    def _progress(self, path, progress):
+        """Report the whole file sent, after a hook that can look mid-upload."""
+        if self.during_upload:
+            self.during_upload(path)
+        if progress:
+            size = os.path.getsize(path)
+            progress(size, size)
+
+    async def send_video(
+        self, chat_id, path, caption, parse_mode, progress=None, **kwargs
+    ):
         assert chat_id == "me" and os.path.isfile(path)
+        self._progress(path, progress)
         self.video_kwargs.append(kwargs)
         await self.send("video", os.path.basename(path), caption)
 
@@ -62,8 +75,9 @@ class FakeClient:
         assert chat_id == "me" and os.path.isfile(path)
         await self.send("photo", os.path.basename(path), caption)
 
-    async def send_document(self, chat_id, path, caption, parse_mode):
+    async def send_document(self, chat_id, path, caption, parse_mode, progress=None):
         assert chat_id == "me" and os.path.isfile(path)
+        self._progress(path, progress)
         await self.send("document", os.path.basename(path), caption)
 
 
@@ -115,6 +129,45 @@ class HelpersTestCase(unittest.TestCase):
         path = os.path.join(self.tmp, "state.json")
         _write(path)
         self.assertEqual(BackupState(path).months, {})
+
+
+class UploadTrackerTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.now = 100.0
+        self.tracker = UploadTracker(clock=lambda: self.now)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_progress_and_speed(self):
+        path = os.path.join(self.tmp, "1 - a.mp4")
+        _write(path, size=100)
+        progress = self.tracker.start(path, "My Chat", "2026_08")
+        self.now = 100.5
+        progress(50, 100)
+        # under a second: no speed yet
+        self.assertEqual(self.tracker.snapshot()["speed"], 0)
+        self.now = 102.0
+        progress(80, 100)
+        self.assertEqual(
+            self.tracker.snapshot(),
+            {
+                "files": [
+                    {
+                        "chat": "My Chat",
+                        "month": "2026_08",
+                        "name": "1 - a.mp4",
+                        "size": 100,
+                        "sent": 80,
+                        "speed": 40,
+                    }
+                ],
+                "speed": 40,
+            },
+        )
+        self.tracker.finish(path)
+        self.assertEqual(self.tracker.snapshot(), {"files": [], "speed": 0})
 
 
 class SyncTestCase(unittest.TestCase):
@@ -395,6 +448,31 @@ class SyncTestCase(unittest.TestCase):
         self.assertEqual(
             self.client.video_kwargs, [{"thumb": None, "supports_streaming": True}]
         )
+
+    def test_upload_status_shows_files_while_they_upload(self):
+        self.file("2026_08", "1 - a.mp4")
+        seen = []
+        self.client.during_upload = lambda path: seen.append(
+            self.backup.upload_status()
+        )
+        self.sync()
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(
+            seen[0]["files"],
+            [
+                {
+                    "chat": "My Chat",
+                    "month": "2026_08",
+                    "name": "1 - a.mp4",
+                    "size": "1B",
+                    "progress": 0.0,
+                    "speed": "0.0b/s",
+                }
+            ],
+        )
+        self.assertEqual(seen[0]["months"], {"-100": "2026_08 0/1"})
+        # finished files leave the list
+        self.assertEqual(self.backup.upload_status()["files"], [])
 
     def test_status_lists_only_backed_up_chats(self):
         self.app.chat_download_config[-200] = SimpleNamespace(backup_to_saved=False)

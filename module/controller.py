@@ -252,6 +252,7 @@ class Controller:
                     "downloaded": self._app.total_download_task,
                 },
                 "backup": self._downloader.backup_status(),
+                "uploads": self._downloader.upload_status(),
                 # "download" or "backup": what a DOWNLOADING run is busy with
                 "phase": self._downloader.run_phase()
                 if self._state is State.DOWNLOADING

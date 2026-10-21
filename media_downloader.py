@@ -788,6 +788,22 @@ def backup_status() -> dict:
     return _get_saved_backup().status()
 
 
+def upload_status() -> dict:
+    """Files being uploaded to Saved Messages right now, with progress."""
+    return _get_saved_backup().upload_status()
+
+
+def _set_transmissions(client: pyrogram.Client):
+    """Let pyrogram run as many uploads and downloads as this run asks for.
+
+    pyrogram allows one transfer at a time unless told otherwise, which would
+    turn max_backup_task parallel uploads back into a queue.
+    """
+    set_max_concurrent_transmissions(
+        client, max(app.max_concurrent_transmissions, app.max_backup_task)
+    )
+
+
 async def start_download(client: pyrogram.Client):
     """Start a download run for every chat in app.chat_download_config.
 
@@ -800,7 +816,7 @@ async def start_download(client: pyrogram.Client):
     reset_download_stat()
     queue = asyncio.Queue()
     app.is_running = True
-    set_max_concurrent_transmissions(client, app.max_concurrent_transmissions)
+    _set_transmissions(client)
     _run_tasks.clear()
     _run_tasks.append(asyncio.ensure_future(download_all_chat(client)))
     for _ in range(app.max_download_task):
@@ -820,6 +836,7 @@ async def start_backup(client: pyrogram.Client):
     reset_download_stat()
     app.is_running = True
     _backup_only = True
+    _set_transmissions(client)
     _run_tasks.clear()
     _backup_task = asyncio.ensure_future(_get_saved_backup().run(client, lambda: True))
     _run_tasks.append(_backup_task)

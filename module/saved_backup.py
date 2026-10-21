@@ -15,13 +15,14 @@ import hashlib
 import json
 import os
 import re
+import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import pyrogram
 from loguru import logger
 
-from utils.format import validate_title
+from utils.format import format_byte, validate_title
 
 SAVED_MESSAGES = "me"
 STATE_FILE_NAME = "saved_backup.json"
@@ -205,6 +206,7 @@ async def _send_local(
     caption: str,
     message: Optional[pyrogram.types.Message],
     temp_path: str,
+    progress: Optional[Callable] = None,
 ):
     """Upload the local file: videos as videos, everything else as a file.
 
@@ -213,6 +215,8 @@ async def _send_local(
     """
     ext = os.path.splitext(path)[1].lower()
     kwargs = {"caption": caption, "parse_mode": pyrogram.enums.ParseMode.DISABLED}
+    if progress:
+        kwargs["progress"] = progress
     if ext in VIDEO_EXTS:
         thumb = None
         video = getattr(message, "video", None)
@@ -248,11 +252,65 @@ async def upload(
     caption: str,
     message: Optional[pyrogram.types.Message] = None,
     temp_path: str = "",
+    progress: Optional[Callable] = None,
 ):
-    """Upload one local file to Saved Messages; nothing is forwarded or copied."""
+    """Upload one local file to Saved Messages; nothing is forwarded or copied.
+
+    progress(sent_bytes, total_bytes) is called as pyrogram sends the file.
+    """
     await _retry_flood_wait(
-        lambda: _send_local(client, path, caption, message, temp_path), path
+        lambda: _send_local(client, path, caption, message, temp_path, progress),
+        path,
     )
+
+
+class UploadTracker:
+    """Files being uploaded right now, with progress and speed, for the GUI."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic):
+        self.clock = clock
+        self.files: Dict[str, Dict[str, Any]] = {}
+
+    def start(self, path: str, folder: str, month_dir: str) -> Callable:
+        """Register a file; returns the progress callback to hand to pyrogram."""
+        now = self.clock()
+        entry = {
+            "chat": folder,
+            "month": month_dir,
+            "name": os.path.basename(path),
+            "size": os.path.getsize(path),
+            "sent": 0,
+            "speed": 0,
+            "_mark_bytes": 0,
+            "_mark_time": now,
+        }
+        self.files[path] = entry
+
+        def progress(current: int, total: int):
+            entry["sent"] = current
+            entry["size"] = total or entry["size"]
+            now = self.clock()
+            # speed over at least a second, like the download list
+            if now - entry["_mark_time"] >= 1.0:
+                entry["speed"] = int(
+                    (current - entry["_mark_bytes"]) / (now - entry["_mark_time"])
+                )
+                entry["_mark_bytes"] = current
+                entry["_mark_time"] = now
+
+        return progress
+
+    def finish(self, path: str):
+        """The file is sent, failed or cancelled: it leaves the list."""
+        self.files.pop(path, None)
+
+    def snapshot(self) -> Dict[str, Any]:
+        """{"files": [...], "speed": bytes per second over all files}."""
+        files = [
+            {k: v for k, v in entry.items() if not k.startswith("_")}
+            for entry in self.files.values()
+        ]
+        return {"files": files, "speed": sum(f["speed"] for f in files)}
 
 
 class SavedBackup:
@@ -263,6 +321,7 @@ class SavedBackup:
         self.state = BackupState(state_path)
         # chat key -> what is being synced right now, for the GUI
         self.current: Dict[str, str] = {}
+        self.uploads = UploadTracker()
         self._folders: Dict[str, str] = {}
 
     async def _folder(self, client: pyrogram.Client, chat_id) -> str:
@@ -323,13 +382,19 @@ class SavedBackup:
                 if not self.app.is_running:
                     return
                 message_id = message_id_of(name)
-                await upload(
-                    client,
-                    os.path.join(path, name),
-                    caption_for(folder, month_dir, name),
-                    messages.get(message_id) if message_id is not None else None,
-                    self.app.temp_save_path,
-                )
+                file_path = os.path.join(path, name)
+                progress = self.uploads.start(file_path, folder, month_dir)
+                try:
+                    await upload(
+                        client,
+                        file_path,
+                        caption_for(folder, month_dir, name),
+                        messages.get(message_id) if message_id is not None else None,
+                        self.app.temp_save_path,
+                        progress,
+                    )
+                finally:
+                    self.uploads.finish(file_path)
                 self.state.add_sent(key, month_dir, name)
                 done += 1
                 self.current[key] = f"{month_dir} {done}/{len(names)}"
@@ -381,4 +446,25 @@ class SavedBackup:
             }
             for chat_id, c in self.app.chat_download_config.items()
             if c.backup_to_saved
+        }
+
+    def upload_status(self) -> Dict[str, Any]:
+        """Files being uploaded, for the GUI's uploading tab."""
+        snapshot = self.uploads.snapshot()
+        return {
+            "files": [
+                {
+                    "chat": f["chat"],
+                    "month": f["month"],
+                    "name": f["name"],
+                    "size": format_byte(f["size"]),
+                    "progress": round(f["sent"] / f["size"] * 100, 1)
+                    if f["size"]
+                    else 0,
+                    "speed": format_byte(f["speed"]) + "/s",
+                }
+                for f in snapshot["files"]
+            ],
+            "speed": format_byte(snapshot["speed"]) + "/s",
+            "months": {k: v for k, v in self.current.items() if v},
         }
