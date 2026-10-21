@@ -26,12 +26,14 @@ from module.gui_config import (
     read_basic_config,
     read_chats,
     set_max_file_sizes,
+    set_backups,
     set_start_months,
     unique_chat_ids,
     validate_basic_config,
     validate_duplicate_min_size,
     validate_max_file_sizes,
     validate_skip_duplicate_media,
+    validate_backups,
     validate_start_months,
     write_basic_config,
     write_chats,
@@ -63,6 +65,7 @@ class GuiConfigTestCase(unittest.TestCase):
             "save_path": self.save_path,
             "media_types": ["photo", "video"],
             "max_download_task": 5,
+            "max_backup_task": 3,
         }
         form.update(overrides)
         return form
@@ -209,6 +212,8 @@ class GuiConfigTestCase(unittest.TestCase):
             ({"max_download_task": 0}, "同时下载文件数"),
             ({"max_download_task": 11}, "同时下载文件数"),
             ({"max_download_task": "x"}, "同时下载文件数"),
+            ({"max_backup_task": 0}, "同时备份文件数"),
+            ({"max_backup_task": 11}, "同时备份文件数"),
             ({"save_path": "  "}, "保存目录"),
             ({"proxy": {"scheme": "ftp", "hostname": "h", "port": 1}}, "代理类型"),
             ({"proxy": {"scheme": "socks5", "hostname": "", "port": 1}}, "代理地址"),
@@ -295,6 +300,7 @@ class GuiConfigTestCase(unittest.TestCase):
                 "save_path": self.save_path,
                 "media_types": ["photo", "video"],
                 "max_download_task": 5,
+                "max_backup_task": 3,
                 "skip_duplicate_media": True,
                 "duplicate_min_size_mb": 1,
             },
@@ -488,6 +494,50 @@ class DuplicateOptionsTestCase(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_validate_backups(self):
+        self.assertEqual(validate_backups(None), {})
+        self.assertEqual(
+            validate_backups(
+                {
+                    "@Chan": {"enabled": True, "end_month": " 2026-09 "},
+                    "1": {"enabled": False, "end_month": ""},
+                }
+            ),
+            {"chan": (True, "2026-09"), "1": (False, "")},
+        )
+        for bad in (
+            [],
+            {"1": "on"},
+            {"1": {"enabled": "yes", "end_month": "2026-09"}},
+            {"1": {"enabled": True, "end_month": ""}},
+            {"1": {"enabled": False, "end_month": "2026-13"}},
+        ):
+            with self.subTest(bad=bad):
+                with self.assertRaises(GuiError):
+                    validate_backups(bad)
+
+    def test_set_backups(self):
+        chats = [
+            {"chat_id": 1, "backup_to_saved": True, "backup_end_month": "2026-01"},
+            {"chat_id": "chan"},
+        ]
+        set_backups(
+            chats,
+            {"1": (False, ""), "-5": (True, "2026-09")},
+            {-5: "chan"},
+        )
+        self.assertEqual(
+            chats,
+            [
+                {"chat_id": 1},
+                {
+                    "chat_id": "chan",
+                    "backup_to_saved": True,
+                    "backup_end_month": "2026-09",
+                },
+            ],
+        )
 
     def test_validate_skip_duplicate_media(self):
         self.assertIs(validate_skip_duplicate_media(True), True)

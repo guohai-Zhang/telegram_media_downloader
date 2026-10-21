@@ -69,6 +69,7 @@ temp/
 config.yaml
 data.yaml
 media_index.json
+saved_backup.json
 *.scss
 *.css.map
 .serena/

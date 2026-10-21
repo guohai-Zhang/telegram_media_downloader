@@ -389,6 +389,7 @@ def api_save_chats(controller):
         body.get("start_months"),
         body.get("skip_duplicate_media"),
         body.get("duplicate_min_size_mb"),
+        body.get("backups"),
     )
 
 

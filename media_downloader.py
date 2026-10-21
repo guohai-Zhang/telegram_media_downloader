@@ -17,6 +17,8 @@ from module.download_stat import reset_download_stat, update_download_status
 from module.get_chat_history_v2 import get_chat_history_v2
 from module.language import _t
 from module.media_index import MediaIndex, MediaInfo
+from module.saved_backup import STATE_FILE_NAME as BACKUP_STATE_FILE_NAME
+from module.saved_backup import SavedBackup
 from module.pyrogram_extension import (
     HookClient,
     fetch_message,
@@ -53,6 +55,8 @@ RETRY_FETCH_BATCH = 200
 _run_tasks: List[asyncio.Task] = []
 MEDIA_INDEX_FILE_NAME = "media_index.json"
 _media_index: Optional[MediaIndex] = None
+_saved_backup: Optional[SavedBackup] = None
+_backup_task: Optional[asyncio.Task] = None
 
 logging.getLogger("pyrogram.session.session").addFilter(LogFilter())
 logging.getLogger("pyrogram.client").addFilter(LogFilter())
@@ -748,9 +752,30 @@ async def run_until_all_task_finish():
 
 
 async def wait_until_finished():
-    """Wait until the current run completes or is stopped (bot mode is ignored)."""
-    while app.is_running and not _all_chats_finished():
+    """Wait until the current run completes or is stopped (bot mode is ignored).
+
+    The run includes the backup to Saved Messages, which makes its last pass
+    once every chat has finished downloading.
+    """
+    while app.is_running and (
+        not _all_chats_finished() or (_backup_task and not _backup_task.done())
+    ):
         await asyncio.sleep(1)
+
+
+def _get_saved_backup() -> SavedBackup:
+    """The Saved Messages backup, its state kept next to data.yaml."""
+    global _saved_backup  # pylint: disable = W0603
+    if _saved_backup is None:
+        _saved_backup = SavedBackup(
+            app, os.path.join(os.path.abspath("."), BACKUP_STATE_FILE_NAME)
+        )
+    return _saved_backup
+
+
+def backup_status() -> dict:
+    """Synced months and current progress of every chat backed up."""
+    return _get_saved_backup().status()
 
 
 async def start_download(client: pyrogram.Client):
@@ -760,7 +785,7 @@ async def start_download(client: pyrogram.Client):
     worker tasks, transmission semaphores) is rebuilt on the running loop.
     """
     # pylint: disable = W0603
-    global queue
+    global queue, _backup_task
     reset_download_stat()
     queue = asyncio.Queue()
     app.is_running = True
@@ -769,6 +794,10 @@ async def start_download(client: pyrogram.Client):
     _run_tasks.append(asyncio.ensure_future(download_all_chat(client)))
     for _ in range(app.max_download_task):
         _run_tasks.append(asyncio.ensure_future(worker(client)))
+    _backup_task = asyncio.ensure_future(
+        _get_saved_backup().run(client, _all_chats_finished)
+    )
+    _run_tasks.append(_backup_task)
 
 
 async def stop_download():

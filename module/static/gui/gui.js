@@ -71,6 +71,7 @@ layui.use(['element', 'layer'], function () {
     var checkedById = {};
     var monthById = {};
     var sizeById = {};
+    var backupById = {};
     var extra = [];
     saved.forEach(function (c) {
       var normKey = normalizeKey(c.chat_id);
@@ -84,12 +85,15 @@ layui.use(['element', 'layer'], function () {
         checkedById[String(match.id)] = true;
         monthById[String(match.id)] = c.start_month || '';
         sizeById[String(match.id)] = c.max_file_size_mb || '';
+        backupById[String(match.id)] = { on: !!c.backup_to_saved, end: c.backup_end_month || '', configKey: c.chat_id };
       } else {
-        extra.push({ key: c.chat_id, title: c.title, type: '', username: '', checked: true, startMonth: c.start_month || '', maxSize: c.max_file_size_mb || '' });
+        extra.push({ key: c.chat_id, configKey: c.chat_id, title: c.title, type: '', username: '', checked: true, startMonth: c.start_month || '', maxSize: c.max_file_size_mb || '', backup: !!c.backup_to_saved, backupEnd: c.backup_end_month || '' });
       }
     });
     return extra.concat(dialogs.map(function (d) {
-      return { key: d.id, title: d.title, type: d.type, username: d.username, checked: !!checkedById[String(d.id)], startMonth: monthById[String(d.id)] || '', maxSize: sizeById[String(d.id)] || '' };
+      var b = backupById[String(d.id)] || {};
+      // configKey: how config.yaml names the chat, which keys the backup status
+      return { key: d.id, configKey: b.configKey, title: d.title, type: d.type, username: d.username, checked: !!checkedById[String(d.id)], startMonth: monthById[String(d.id)] || '', maxSize: sizeById[String(d.id)] || '', backup: !!b.on, backupEnd: b.end || '' };
     }));
   }
 
@@ -184,12 +188,30 @@ layui.use(['element', 'layer'], function () {
     $('#account_me').text(s.me ? s.me.name + (s.me.username ? ' (@' + s.me.username + ')' : '') : '');
   }
 
+  // under each backed-up chat: which months are in Saved Messages, and what
+  // is being sent right now
+  function renderBackup(backup) {
+    backup = backup || {};
+    $('#chat_list .gui-backup-state').each(function () {
+      var b = backup[this.getAttribute('data-backup-key')];
+      var text = '';
+      if (b) {
+        text = b.synced.length ? '已同步到收藏：' + b.synced.join('、') : '还没有同步完成的月份';
+        if (b.current) {
+          text += ' · 正在同步 ' + b.current;
+        }
+      }
+      $(this).text(text).toggle(!!text);
+    });
+  }
+
   function refreshStatus() {
     return api('GET', 'api/status', undefined, true).then(function (s) {
       var changed = !status || status.state !== s.state;
       status = s;
       renderBar(s);
       renderAccount(s);
+      renderBackup(s.backup);
       $('#settings_form :input').prop('disabled', s.state === 'downloading' || s.state === 'stopping');
       if (changed) {
         if (!userPickedTab || s.state === 'downloading') {
@@ -223,6 +245,7 @@ layui.use(['element', 'layer'], function () {
     f.find('[name=api_hash]').val(c.api_hash);
     f.find('[name=save_path]').val(c.save_path);
     f.find('[name=max_download_task]').val(c.max_download_task);
+    f.find('[name=max_backup_task]').val(c.max_backup_task);
     f.find('[name=media_types]').each(function () {
       this.checked = c.media_types.indexOf(this.value) >= 0;
     });
@@ -249,7 +272,8 @@ layui.use(['element', 'layer'], function () {
       } : null,
       save_path: f.find('[name=save_path]').val(),
       media_types: f.find('[name=media_types]:checked').map(function () { return this.value; }).get(),
-      max_download_task: f.find('[name=max_download_task]').val()
+      max_download_task: f.find('[name=max_download_task]').val(),
+      max_backup_task: f.find('[name=max_backup_task]').val()
     };
   }
 
@@ -324,10 +348,15 @@ layui.use(['element', 'layer'], function () {
         'placeholder="起始年月 如 2024-06" value="' + esc(row.startMonth || '') + '">' +
         '<input class="layui-input gui-size" type="number" min="0" data-size-index="' + index + '" ' +
         'placeholder="大小上限 MB" title="单个文件最大（MB），留空不限" value="' + esc(String(row.maxSize || '')) + '">' +
-        '</label>';
+        '<span class="gui-backup"><input type="checkbox" data-backup-index="' + index + '"' + (row.backup ? ' checked' : '') + '> 备份</span>' +
+        '<input class="layui-input gui-backup-month" data-backup-end-index="' + index + '" maxlength="7" ' +
+        'placeholder="截止年月 如 2026-09" title="这个月及更早的月份，从最旧的开始传到收藏夹" value="' + esc(row.backupEnd || '') + '">' +
+        '</label>' +
+        '<div class="gui-tip gui-backup-state" data-backup-key="' + esc(String(row.configKey === undefined ? row.key : row.configKey)) + '"></div>';
     }).join('');
     $('#chat_list').html(html || '<p class="gui-tip">没有找到频道或群组。</p>');
     $('#chat_selected').text('已选 ' + selectedCount() + ' 个');
+    renderBackup(status && status.backup);
   }
 
   var chatsLoadPromise = null;
@@ -387,9 +416,15 @@ layui.use(['element', 'layer'], function () {
   $('#chat_list').on('input change', 'input.gui-size', function () {
     chatRows[Number(this.getAttribute('data-size-index'))].maxSize = $.trim(this.value);
   });
-  $('#chat_list').on('change', 'input[type=checkbox]', function () {
+  $('#chat_list').on('change', 'input[data-index]', function () {
     chatRows[Number(this.getAttribute('data-index'))].checked = this.checked;
     $('#chat_selected').text('已选 ' + selectedCount() + ' 个');
+  });
+  $('#chat_list').on('change', 'input[data-backup-index]', function () {
+    chatRows[Number(this.getAttribute('data-backup-index'))].backup = this.checked;
+  });
+  $('#chat_list').on('input change', 'input.gui-backup-month', function () {
+    chatRows[Number(this.getAttribute('data-backup-end-index'))].backupEnd = $.trim(this.value);
   });
   $('#btn_refresh_dialogs').on('click', function () {
     loadChats(true);
@@ -423,10 +458,12 @@ layui.use(['element', 'layer'], function () {
     var ids = chatRows.filter(function (r) { return r.checked; }).map(function (r) { return r.key; });
     var months = {};
     var sizes = {};
+    var backups = {};
     chatRows.forEach(function (r) {
       if (r.checked) {
         months[String(r.key)] = r.startMonth || '';
         sizes[String(r.key)] = r.maxSize || '';
+        backups[String(r.key)] = { enabled: !!r.backup, end_month: r.backupEnd || '' };
       }
     });
     var payload = {
@@ -434,7 +471,8 @@ layui.use(['element', 'layer'], function () {
       max_file_sizes: sizes,
       start_months: months,
       skip_duplicate_media: $('#skip_duplicate_media').prop('checked'),
-      duplicate_min_size_mb: $('#duplicate_min_size_mb').val()
+      duplicate_min_size_mb: $('#duplicate_min_size_mb').val(),
+      backups: backups
     };
     api('POST', 'api/chats', payload).then(function () {
       toast('已保存 ' + ids.length + ' 个频道', true);

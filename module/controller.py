@@ -45,12 +45,14 @@ from module.gui_config import (
     read_basic_config,
     read_chats,
     set_max_file_sizes,
+    set_backups,
     set_start_months,
     unique_chat_ids,
     validate_basic_config,
     validate_duplicate_min_size,
     validate_max_file_sizes,
     validate_skip_duplicate_media,
+    validate_backups,
     validate_start_months,
     write_basic_config,
     write_chats,
@@ -249,6 +251,7 @@ class Controller:
                     # files actually downloaded; total/done count every message
                     "downloaded": self._app.total_download_task,
                 },
+                "backup": self._downloader.backup_status(),
             }
 
     def set_notice(self, notice: str) -> None:
@@ -603,6 +606,8 @@ class Controller:
                     "title": match["title"] if match else str(chat_id),
                     "start_month": str(item.get("start_month") or ""),
                     "max_file_size_mb": item.get("max_file_size_mb") or "",
+                    "backup_to_saved": bool(item.get("backup_to_saved")),
+                    "backup_end_month": str(item.get("backup_end_month") or ""),
                 }
             )
         return result
@@ -614,6 +619,7 @@ class Controller:
         start_months: Any = None,
         skip_duplicate_media: Any = None,
         duplicate_min_size_mb: Any = None,
+        backups: Any = None,
     ) -> None:
         """Save the selected chats, keeping progress of chats that stay selected.
 
@@ -630,6 +636,7 @@ class Controller:
             raise GuiError("频道列表格式不正确")
         limits = validate_max_file_sizes(max_file_sizes)
         months = validate_start_months(start_months)
+        backup_settings = validate_backups(backups)
         skip_duplicates = None
         if skip_duplicate_media is not None:
             skip_duplicates = validate_skip_duplicate_media(skip_duplicate_media)
@@ -652,6 +659,7 @@ class Controller:
             )
             set_start_months(chats, months, usernames)
             set_max_file_sizes(chats, limits, usernames)
+            set_backups(chats, backup_settings, usernames)
             write_chats(self._config_path, chats)
             if skip_duplicates is not None or min_size is not None:
                 write_duplicate_options(

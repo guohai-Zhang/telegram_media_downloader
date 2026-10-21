@@ -24,3 +24,6 @@
 .gui-url input { width: 340px; height: 26px; font-size: 12px; }
 .gui-chat-row .gui-month { flex: none; width: 150px; height: 28px; font-size: 12px; }
 .gui-chat-row .gui-size { flex: none; width: 110px; height: 28px; font-size: 12px; }
+.gui-chat-row .gui-backup { flex: none; font-size: 12px; white-space: nowrap; }
+.gui-chat-row .gui-backup-month { flex: none; width: 150px; height: 28px; font-size: 12px; }
+.gui-backup-state { display: none; padding: 0 10px 6px 34px; font-size: 12px; border-bottom: 1px solid #f3f3f3; }

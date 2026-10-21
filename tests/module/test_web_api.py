@@ -62,6 +62,7 @@ class FakeController:
         start_months=None,
         skip_duplicate_media=None,
         duplicate_min_size_mb=None,
+        backups=None,
     ):
         self._call(
             "save_chats",
@@ -70,6 +71,7 @@ class FakeController:
             start_months,
             skip_duplicate_media,
             duplicate_min_size_mb,
+            backups,
         )
 
     def start_download(self):
@@ -204,6 +206,7 @@ class WebApiTestCase(unittest.TestCase):
                 "start_months": {"1": "2024-06"},
                 "skip_duplicate_media": False,
                 "duplicate_min_size_mb": 5,
+                "backups": {"1": {"enabled": True, "end_month": "2026-09"}},
             },
             headers=h,
         )
@@ -223,7 +226,15 @@ class WebApiTestCase(unittest.TestCase):
                 ("list_dialogs", False),
                 ("resolve_chat", "t.me/x"),
                 ("current_chats",),
-                ("save_chats", [1, "a"], {"1": 300}, {"1": "2024-06"}, False, 5),
+                (
+                    "save_chats",
+                    [1, "a"],
+                    {"1": 300},
+                    {"1": "2024-06"},
+                    False,
+                    5,
+                    {"1": {"enabled": True, "end_month": "2026-09"}},
+                ),
                 ("start_download",),
                 ("stop_download",),
                 ("get_config",),

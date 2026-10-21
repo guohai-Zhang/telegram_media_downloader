@@ -1327,7 +1327,7 @@ class DownloadLifecycleTestCase(unittest.TestCase):
             app.max_download_task = 3
             self.run_async(media_downloader.start_download(client))
             first_queue = media_downloader.queue
-            self.assertEqual(len(media_downloader._run_tasks), 4)
+            self.assertEqual(len(media_downloader._run_tasks), 5)  # + the backup task
             self.assertTrue(app.is_running)
             tasks = list(media_downloader._run_tasks)
 

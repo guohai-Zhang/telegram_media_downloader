@@ -57,6 +57,10 @@
           <input class="layui-input gui-narrow" type="number" min="1" max="10" name="max_download_task">
           <span class="gui-tip">数值越大越容易被 Telegram 限流，一般保持默认 5 即可；修改后下次开始下载时生效</span>
         </div>
+        <div class="gui-row"><label>同时备份文件数</label>
+          <input class="layui-input gui-narrow" type="number" min="1" max="10" name="max_backup_task">
+          <span class="gui-tip">同时上传到收藏夹的文件数，一般保持默认 3；月份仍按从旧到新依次同步</span>
+        </div>
       </div>
     </fieldset>
     <div class="gui-row">

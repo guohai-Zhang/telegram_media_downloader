@@ -315,6 +315,10 @@ class ChatDownloadConfig:
         # per-chat file size limit in MB (config: max_file_size_mb); None = the
         # global max_file_size_mb applies
         self.max_file_size_mb: Optional[int] = None
+        # back up downloaded months up to backup_end_month to Saved Messages
+        # (config: backup_to_saved, backup_end_month "YYYY-MM")
+        self.backup_to_saved: bool = False
+        self.backup_end_month: Optional[datetime] = None
         self.node: TaskNode = TaskNode(0)
 
 
@@ -440,6 +444,8 @@ class Application:
         self.web_host: str = "0.0.0.0"
         self.web_port: int = 5000
         self.max_download_task: int = 5
+        # files sent to Saved Messages at the same time
+        self.max_backup_task: int = 3
         # skip files larger than this many MB; 0 means no limit
         self.max_file_size_mb: int = 0
         # skip a file already downloaded from the same chat (see media_index)
@@ -550,6 +556,7 @@ class Application:
         self.max_download_task = _config.get(
             "max_download_task", self.max_download_task
         )
+        self.max_backup_task = get_config(_config, "max_backup_task", 3, int)
         self.max_file_size_mb = get_config(_config, "max_file_size_mb", 0, int)
         self.skip_duplicate_media = get_config(
             _config, "skip_duplicate_media", True, bool
@@ -659,6 +666,14 @@ class Application:
                         item["chat_id"]
                     ].max_file_size_mb = parse_chat_max_file_size(
                         item.get("max_file_size_mb")
+                    )
+                    chat_config = self.chat_download_config[item["chat_id"]]
+                    chat_config.backup_end_month = parse_start_month(
+                        item.get("backup_end_month")
+                    )
+                    chat_config.backup_to_saved = (
+                        bool(item.get("backup_to_saved"))
+                        and chat_config.backup_end_month is not None
                     )
                     self.chat_download_config[
                         item["chat_id"]

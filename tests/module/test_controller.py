@@ -173,6 +173,9 @@ class FakeDownloader:
         self.started_with = client
         self.finished = asyncio.Event()
 
+    def backup_status(self):
+        return {}
+
     async def wait_until_finished(self):
         await self.finished.wait()
 
@@ -638,6 +641,8 @@ class ConfigAndDownloadTestCase(ControllerTestBase):
                     "title": "Mine",
                     "start_month": "",
                     "max_file_size_mb": "",
+                    "backup_to_saved": False,
+                    "backup_end_month": "",
                 }
             ],
         )
@@ -699,6 +704,8 @@ class ConfigAndDownloadTestCase(ControllerTestBase):
                     "title": "Mine",
                     "start_month": "",
                     "max_file_size_mb": "",
+                    "backup_to_saved": False,
+                    "backup_end_month": "",
                 }
             ],
         )

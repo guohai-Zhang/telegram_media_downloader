@@ -8,7 +8,7 @@ import re
 import shutil
 import threading
 import time
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from ruamel import yaml
 
@@ -247,6 +247,32 @@ def validate_start_months(raw: Any) -> Dict[str, str]:
     return result
 
 
+def validate_backups(raw: Any) -> Dict[str, Tuple[bool, str]]:
+    """Parse {chat_id: {"enabled": bool, "end_month": "YYYY-MM"}} from the chats page.
+
+    A chat backed up needs its cut-off month: only finished months should be
+    sent, and the channel decides which month is still being filled.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise GuiError("备份设置格式不正确")
+    result: Dict[str, Tuple[bool, str]] = {}
+    for key, value in raw.items():
+        if not isinstance(value, dict) or not isinstance(
+            value.get("enabled", False), bool
+        ):
+            raise GuiError("备份设置格式不正确")
+        enabled = value.get("enabled", False)
+        month = str(value.get("end_month") or "").strip()
+        if month and not _START_MONTH.match(month):
+            raise GuiError(f"截止年月格式应为 YYYY-MM，例如 2026-09（收到 {month}）")
+        if enabled and not month:
+            raise GuiError("打开备份的频道请填写截止年月")
+        result[_norm(key)] = (enabled, month)
+    return result
+
+
 def _set_chat_field(
     chats: List[Any], field: str, values: Dict[str, Any], usernames: Dict[Any, str]
 ) -> None:
@@ -275,6 +301,18 @@ def set_start_months(
 ) -> None:
     """Write each chat's start_month (from validate_start_months; "" removes it)."""
     _set_chat_field(chats, "start_month", start_months, usernames)
+
+
+def set_backups(
+    chats: List[Any], backups: Dict[str, Tuple[bool, str]], usernames: Dict[Any, str]
+) -> None:
+    """Write each chat's backup_to_saved / backup_end_month (from validate_backups)."""
+    _set_chat_field(
+        chats, "backup_to_saved", {k: v[0] for k, v in backups.items()}, usernames
+    )
+    _set_chat_field(
+        chats, "backup_end_month", {k: v[1] for k, v in backups.items()}, usernames
+    )
 
 
 def set_max_file_sizes(
@@ -326,6 +364,19 @@ def _validate_save_path(raw: Any) -> str:
     return path
 
 
+def _task_count(form: Dict[str, Any], key: str, default: int, label: str) -> int:
+    """A worker count from the settings form, within the allowed range."""
+    try:
+        value = int(form.get(key, default))
+    except (TypeError, ValueError):
+        value = 0
+    if not MAX_DOWNLOAD_TASK_MIN <= value <= MAX_DOWNLOAD_TASK_MAX:
+        raise GuiError(
+            f"{label}应在 {MAX_DOWNLOAD_TASK_MIN} 到 {MAX_DOWNLOAD_TASK_MAX} 之间"
+        )
+    return value
+
+
 def validate_basic_config(form: Dict[str, Any]) -> Dict[str, Any]:
     """Validate the settings form and return normalized values."""
     try:
@@ -347,14 +398,8 @@ def validate_basic_config(form: Dict[str, Any]) -> Dict[str, Any]:
     ):
         raise GuiError("请至少选择一种媒体类型")
 
-    try:
-        max_download_task = int(form.get("max_download_task", 5))
-    except (TypeError, ValueError):
-        max_download_task = 0
-    if not MAX_DOWNLOAD_TASK_MIN <= max_download_task <= MAX_DOWNLOAD_TASK_MAX:
-        raise GuiError(
-            f"同时下载文件数应在 {MAX_DOWNLOAD_TASK_MIN} 到 {MAX_DOWNLOAD_TASK_MAX} 之间"
-        )
+    max_download_task = _task_count(form, "max_download_task", 5, "同时下载文件数")
+    max_backup_task = _task_count(form, "max_backup_task", 3, "同时备份文件数")
 
     return {
         "api_id": api_id,
@@ -363,13 +408,21 @@ def validate_basic_config(form: Dict[str, Any]) -> Dict[str, Any]:
         "save_path": _validate_save_path(form.get("save_path")),
         "media_types": [item for item in DEFAULT_MEDIA_TYPES if item in media_types],
         "max_download_task": max_download_task,
+        "max_backup_task": max_backup_task,
     }
 
 
 def write_basic_config(path: str, basic: Dict[str, Any]) -> None:
     """Update only the basic keys; comments and advanced keys are kept."""
     data = _load(path)
-    for key in ("api_id", "api_hash", "save_path", "media_types", "max_download_task"):
+    for key in (
+        "api_id",
+        "api_hash",
+        "save_path",
+        "media_types",
+        "max_download_task",
+        "max_backup_task",
+    ):
         data[key] = basic[key]
     if basic["proxy"]:
         data["proxy"] = basic["proxy"]
@@ -387,6 +440,7 @@ def read_basic_config(app: Any) -> Dict[str, Any]:
         "save_path": app.save_path,
         "media_types": list(app.media_types),
         "max_download_task": app.max_download_task,
+        "max_backup_task": app.max_backup_task,
         "skip_duplicate_media": app.skip_duplicate_media,
         "duplicate_min_size_mb": app.duplicate_min_size_mb,
     }
