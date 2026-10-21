@@ -400,6 +400,13 @@ def api_download_start(controller):
     controller.start_download()
 
 
+@_flask_app.route("/api/backup/start", methods=["POST"])
+@_api
+def api_backup_start(controller):
+    """Back up to Saved Messages without downloading"""
+    controller.start_backup()
+
+
 @_flask_app.route("/api/download/stop", methods=["POST"])
 @_api
 def api_download_stop(controller):

@@ -145,6 +145,9 @@ layui.use(['element', 'layer'], function () {
     if (s.state === 'ready') {
       return s.chat_count ? 'downloading' : 'chats';
     }
+    if (s.state === 'downloading' && s.phase === 'backup') {
+      return 'chats';
+    }
     return TAB_FOR_STATE[s.state];
   }
 
@@ -155,7 +158,10 @@ layui.use(['element', 'layer'], function () {
     if (s.me) {
       text += ' · ' + (s.me.username ? '@' + s.me.username : s.me.name);
     }
-    if (s.state === 'downloading') {
+    if (s.state === 'downloading' && s.phase === 'backup') {
+      // a backup-only run, or a download run whose chats are all done
+      text = (s.progress.total ? '下载完成，' : '') + '正在备份到收藏…（进度见「频道」页）';
+    } else if (s.state === 'downloading') {
       text += ' · 已处理 ' + s.progress.done + ' / ' + s.progress.total + ' 条消息' + ' · 已下载 ' + s.progress.downloaded + ' 个文件';
     }
     $('#gui_state').text(text);
@@ -166,6 +172,12 @@ layui.use(['element', 'layer'], function () {
       .prop('disabled', !enabled)
       .toggleClass('layui-btn-disabled', !enabled)
       .toggleClass('layui-btn-danger', s.state === 'downloading');
+    // during a run the main button is the one Stop for both kinds
+    var canBackup = s.state === 'ready';
+    $('#btn_backup')
+      .toggle(s.state !== 'downloading')
+      .prop('disabled', !canBackup)
+      .toggleClass('layui-btn-disabled', !canBackup);
     $('#download_state').toggle(s.state === 'downloading');
     if (s.state === 'downloading') {
       // Follow the server's global pause state instead of the button's own
@@ -492,6 +504,16 @@ layui.use(['element', 'layer'], function () {
       ? api('POST', 'api/download/stop')
       : api('POST', 'api/download/start').then(function () { switchTab('downloading'); });
     request.always(refreshStatus);
+  });
+
+  $('#btn_backup').on('click', function () {
+    var button = $(this);
+    if (!status || button.prop('disabled')) {
+      return;
+    }
+    button.prop('disabled', true);
+    // the chats page shows each chat's synced months and progress
+    api('POST', 'api/backup/start').then(function () { switchTab('chats'); }).always(refreshStatus);
   });
 
   // index.html's inline handler has already switched the pause state with a

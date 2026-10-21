@@ -57,6 +57,8 @@ MEDIA_INDEX_FILE_NAME = "media_index.json"
 _media_index: Optional[MediaIndex] = None
 _saved_backup: Optional[SavedBackup] = None
 _backup_task: Optional[asyncio.Task] = None
+# True while a run only backs up, started by start_backup()
+_backup_only = False
 
 logging.getLogger("pyrogram.session.session").addFilter(LogFilter())
 logging.getLogger("pyrogram.client").addFilter(LogFilter())
@@ -758,9 +760,17 @@ async def wait_until_finished():
     once every chat has finished downloading.
     """
     while app.is_running and (
-        not _all_chats_finished() or (_backup_task and not _backup_task.done())
+        (not _backup_only and not _all_chats_finished())
+        or (_backup_task and not _backup_task.done())
     ):
         await asyncio.sleep(1)
+
+
+def run_phase() -> str:
+    """ "download" while chats are downloading, "backup" once only backup runs."""
+    if _backup_only or _all_chats_finished():
+        return "backup"
+    return "download"
 
 
 def _get_saved_backup() -> SavedBackup:
@@ -785,7 +795,8 @@ async def start_download(client: pyrogram.Client):
     worker tasks, transmission semaphores) is rebuilt on the running loop.
     """
     # pylint: disable = W0603
-    global queue, _backup_task
+    global queue, _backup_task, _backup_only
+    _backup_only = False
     reset_download_stat()
     queue = asyncio.Queue()
     app.is_running = True
@@ -797,6 +808,20 @@ async def start_download(client: pyrogram.Client):
     _backup_task = asyncio.ensure_future(
         _get_saved_backup().run(client, _all_chats_finished)
     )
+    _run_tasks.append(_backup_task)
+
+
+async def start_backup(client: pyrogram.Client):
+    """Start a run that only backs up to Saved Messages, one pass per chat.
+
+    Nothing is downloaded; stop_download() stops it like a download run.
+    """
+    global _backup_task, _backup_only  # pylint: disable = W0603
+    reset_download_stat()
+    app.is_running = True
+    _backup_only = True
+    _run_tasks.clear()
+    _backup_task = asyncio.ensure_future(_get_saved_backup().run(client, lambda: True))
     _run_tasks.append(_backup_task)
 
 

@@ -252,6 +252,10 @@ class Controller:
                     "downloaded": self._app.total_download_task,
                 },
                 "backup": self._downloader.backup_status(),
+                # "download" or "backup": what a DOWNLOADING run is busy with
+                "phase": self._downloader.run_phase()
+                if self._state is State.DOWNLOADING
+                else "",
             }
 
     def set_notice(self, notice: str) -> None:
@@ -688,14 +692,36 @@ class Controller:
                 self._watch_until_finished(), self._loop
             )
 
-    async def _watch_until_finished(self) -> None:
+    def start_backup(self) -> None:
+        """Reload config and back up the chats with backup on, downloading nothing.
+
+        Runs in the DOWNLOADING state, so Stop and the busy UI work as for a
+        download run.
+        """
+        with self._operation(State.READY):
+            self._app.load_config()
+            if not any(
+                c.backup_to_saved for c in self._app.chat_download_config.values()
+            ):
+                raise GuiError("请先在「频道」里给要备份的频道勾选「备份」并填写截止年月")
+            self._run(self._downloader.start_backup(self._client))
+            with self._state_lock:
+                self._notice = ""
+                self._state = State.DOWNLOADING
+            self._watch_future = asyncio.run_coroutine_threadsafe(
+                self._watch_until_finished("备份完成"), self._loop
+            )
+
+    async def _watch_until_finished(self, notice: Optional[str] = None) -> None:
         """When a run completes on its own, hand off to `_finish_run` for READY."""
         await self._downloader.wait_until_finished()
         with self._state_lock:
             if self._state is not State.DOWNLOADING:
                 return  # stop_download() or shutdown() is handling it
             self._state = State.STOPPING
-            self._start_stop_future(f"下载完成，本次共下载 {self._app.total_download_task} 个文件")
+            self._start_stop_future(
+                notice or f"下载完成，本次共下载 {self._app.total_download_task} 个文件"
+            )
 
     def _start_stop_future(self, notice: str) -> concurrent.futures.Future:
         """Start the one tracked coroutine that stops the downloader.

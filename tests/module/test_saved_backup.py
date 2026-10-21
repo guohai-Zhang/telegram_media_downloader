@@ -7,6 +7,8 @@ import unittest
 from datetime import datetime
 from types import SimpleNamespace
 
+import pyrogram
+
 from module.saved_backup import (
     BackupState,
     SavedBackup,
@@ -30,6 +32,9 @@ class FakeClient:
     def __init__(self, title="My Chat"):
         self.title = title
         self.captions = []
+        self.sent = []
+        self.messages = {}
+        self.video_kwargs = []
 
     async def get_chat(self, chat_id):
         return SimpleNamespace(title=self.title)
@@ -40,9 +45,26 @@ class FakeClient:
             if query in caption.split():
                 yield SimpleNamespace(caption=caption)
 
+    async def get_messages(self, chat_id, ids):
+        return [self.messages.get(i, SimpleNamespace(empty=True)) for i in ids]
+
+    async def send(self, kind, source, caption):
+        """Every way of sending lands here; tests replace it to fail or slow down."""
+        self.captions.append(caption)
+        self.sent.append((kind, source))
+
+    async def send_video(self, chat_id, path, caption, parse_mode, **kwargs):
+        assert chat_id == "me" and os.path.isfile(path)
+        self.video_kwargs.append(kwargs)
+        await self.send("video", os.path.basename(path), caption)
+
+    async def send_photo(self, chat_id, path, caption, parse_mode):
+        assert chat_id == "me" and os.path.isfile(path)
+        await self.send("photo", os.path.basename(path), caption)
+
     async def send_document(self, chat_id, path, caption, parse_mode):
         assert chat_id == "me" and os.path.isfile(path)
-        self.captions.append(caption)
+        await self.send("document", os.path.basename(path), caption)
 
 
 class HelpersTestCase(unittest.TestCase):
@@ -107,6 +129,7 @@ class SyncTestCase(unittest.TestCase):
             date_format="%Y_%m",
             is_running=True,
             max_backup_task=1,
+            temp_save_path=os.path.join(self.tmp, "temp"),
             file_path_prefix=["chat_title", "media_datetime"],
             chat_download_config={-100: self.chat},
         )
@@ -184,7 +207,7 @@ class SyncTestCase(unittest.TestCase):
             self.file("2026_08", f"{i} - v.mp4")
         self.app.max_backup_task = 2
         active = peak = 0
-        send = self.client.send_document
+        send = self.client.send
 
         async def slow_send(*args, **kwargs):
             nonlocal active, peak
@@ -194,7 +217,7 @@ class SyncTestCase(unittest.TestCase):
             await send(*args, **kwargs)
             active -= 1
 
-        self.client.send_document = slow_send
+        self.client.send = slow_send
         self.sync()
         self.assertEqual(peak, 2)
         self.assertEqual(len(self.client.captions), 6)
@@ -204,19 +227,19 @@ class SyncTestCase(unittest.TestCase):
         self.file("2026_08", "1 - a.mp4")
         self.file("2026_08", "2 - b.mp4")
         self.app.max_backup_task = 2
-        send = self.client.send_document
+        send = self.client.send
 
-        async def failing_send(chat_id, path, caption, parse_mode):
-            if path.endswith("2 - b.mp4"):
+        async def failing_send(kind, source, caption):
+            if source == "2 - b.mp4":
                 raise RuntimeError("network")
-            await send(chat_id, path, caption, parse_mode)
+            await send(kind, source, caption)
 
-        self.client.send_document = failing_send
+        self.client.send = failing_send
         with self.assertRaises(RuntimeError):
             self.sync()
         self.assertEqual(self.backup.status()["-100"]["synced"], [])
         # the next pass sends only what is missing
-        self.client.send_document = send
+        self.client.send = send
         self.sync()
         self.assertEqual(
             [c.split("\n")[0] for c in self.client.captions],
@@ -226,20 +249,20 @@ class SyncTestCase(unittest.TestCase):
     def test_search_lag_does_not_resend(self):
         self.file("2026_08", "1 - a.mp4")
         self.file("2026_08", "2 - b.mp4")
-        send = self.client.send_document
+        send = self.client.send
 
-        async def failing_send(chat_id, path, caption, parse_mode):
-            if path.endswith("2 - b.mp4"):
+        async def failing_send(kind, source, caption):
+            if source == "2 - b.mp4":
                 raise RuntimeError("network")
-            await send(chat_id, path, caption, parse_mode)
+            await send(kind, source, caption)
 
-        self.client.send_document = failing_send
+        self.client.send = failing_send
         with self.assertRaises(RuntimeError):
             self.sync()
         # search has not indexed "1 - a.mp4" yet
         sent = list(self.client.captions)
         self.client.captions.clear()
-        self.client.send_document = send
+        self.client.send = send
         self.sync()
         self.assertEqual(
             [c.split("\n")[0] for c in sent + self.client.captions],
@@ -275,20 +298,20 @@ class SyncTestCase(unittest.TestCase):
     def test_search_lag_does_not_resend(self):
         self.file("2026_08", "1 - a.mp4")
         self.file("2026_08", "2 - b.mp4")
-        send = self.client.send_document
+        send = self.client.send
 
-        async def failing_send(chat_id, path, caption, parse_mode):
-            if path.endswith("2 - b.mp4"):
+        async def failing_send(kind, source, caption):
+            if source == "2 - b.mp4":
                 raise RuntimeError("network")
-            await send(chat_id, path, caption, parse_mode)
+            await send(kind, source, caption)
 
-        self.client.send_document = failing_send
+        self.client.send = failing_send
         with self.assertRaises(RuntimeError):
             self.sync()
         # search has not indexed "1 - a.mp4" yet
         sent = list(self.client.captions)
         self.client.captions.clear()
-        self.client.send_document = send
+        self.client.send = send
         self.sync()
         self.assertEqual(
             [c.split("\n")[0] for c in sent + self.client.captions],
@@ -320,6 +343,58 @@ class SyncTestCase(unittest.TestCase):
         asyncio.run(again.sync_chat(self.client, -100, self.chat))
         self.assertEqual(self.client.captions, [])
         self.assertEqual(again.status()["-100"]["synced"], ["2026_08"])
+
+    def video_message(self, message_id):
+        return SimpleNamespace(
+            id=message_id,
+            empty=False,
+            media=True,
+            video=SimpleNamespace(duration=61, width=1280, height=720, thumbs=None),
+            photo=None,
+        )
+
+    def test_videos_go_up_as_videos_and_images_as_original_files(self):
+        self.file("2026_08", "1 - a.mp4")
+        self.file("2026_08", "2 - b.jpg")
+        self.file("2026_08", "3 - c.zip")
+        self.sync()
+        self.assertEqual(
+            self.client.sent,
+            [
+                ("video", "1 - a.mp4"),
+                ("document", "2 - b.jpg"),
+                ("document", "3 - c.zip"),
+            ],
+        )
+
+    def test_video_is_uploaded_from_disk_with_its_details(self):
+        self.file("2026_08", "7 - a.mp4")
+        self.client.messages[7] = self.video_message(7)
+        self.sync()
+        self.assertEqual(self.client.sent, [("video", "7 - a.mp4")])
+        self.assertEqual(
+            self.client.video_kwargs,
+            [
+                {
+                    "thumb": None,
+                    "supports_streaming": True,
+                    "duration": 61,
+                    "width": 1280,
+                    "height": 720,
+                }
+            ],
+        )
+
+    def test_video_posted_as_a_file_still_goes_up_as_a_video(self):
+        self.file("2026_08", "8 - b.mp4")
+        self.client.messages[8] = SimpleNamespace(
+            id=8, empty=False, media=True, video=None, photo=None
+        )
+        self.sync()
+        self.assertEqual(self.client.sent, [("video", "8 - b.mp4")])
+        self.assertEqual(
+            self.client.video_kwargs, [{"thumb": None, "supports_streaming": True}]
+        )
 
     def test_status_lists_only_backed_up_chats(self):
         self.app.chat_download_config[-200] = SimpleNamespace(backup_to_saved=False)

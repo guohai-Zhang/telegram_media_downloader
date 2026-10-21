@@ -1319,6 +1319,20 @@ class DownloadLifecycleTestCase(unittest.TestCase):
     def run_async(self, coro):
         return self.loop.run_until_complete(coro)
 
+    def test_backup_only_run(self):
+        client = mock.Mock(spec=[])
+        backup = mock.Mock()
+        backup.run = _noop
+        with mock.patch("media_downloader._get_saved_backup", return_value=backup):
+            self.run_async(media_downloader.start_backup(client))
+            self.assertEqual(len(media_downloader._run_tasks), 1)
+            self.assertEqual(media_downloader.run_phase(), "backup")
+            # chats never download in this run, so only the backup is awaited
+            self.run_async(asyncio.wait_for(media_downloader.wait_until_finished(), 2))
+            self.run_async(media_downloader.stop_download())
+            self.assertEqual(media_downloader._run_tasks, [])
+            self.assertFalse(app.is_running)
+
     def test_start_then_stop_twice(self):
         client = mock.Mock(spec=[])
         with mock.patch("media_downloader.download_all_chat", new=_noop), mock.patch(

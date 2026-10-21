@@ -27,6 +27,9 @@ SAVED_MESSAGES = "me"
 STATE_FILE_NAME = "saved_backup.json"
 # pause between passes while the download run is still adding files
 PASS_INTERVAL = 30
+# messages Telegram returns per get_messages call
+FETCH_BATCH = 200
+VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}
 
 
 def hashtag(text: str) -> str:
@@ -166,20 +169,90 @@ async def remote_names(
     return names
 
 
-async def upload(client: pyrogram.Client, path: str, caption: str):
-    """Send one file as a document, so photos and videos keep full quality."""
+def message_id_of(name: str) -> Optional[int]:
+    """The message id a downloaded file name starts with, e.g. '123 - a.mp4'."""
+    match = re.match(r"(\d+)", name)
+    return int(match.group(1)) if match else None
+
+
+async def source_messages(
+    client: pyrogram.Client, chat_id, names: List[str]
+) -> Dict[int, pyrogram.types.Message]:
+    """The messages these files came from, by id: only for video details."""
+    ids = sorted({i for i in map(message_id_of, names) if i is not None})
+    found: Dict[int, pyrogram.types.Message] = {}
+    for start in range(0, len(ids), FETCH_BATCH):
+        batch = await client.get_messages(chat_id, ids[start : start + FETCH_BATCH])
+        for message in batch if isinstance(batch, list) else [batch]:
+            if message and not getattr(message, "empty", False) and message.media:
+                found[message.id] = message
+    return found
+
+
+async def _retry_flood_wait(send: Callable[[], Any], what: str):
+    """Run send(), waiting out Telegram's FloodWait as often as it asks."""
     while True:
         try:
-            await client.send_document(
-                SAVED_MESSAGES,
-                path,
-                caption=caption,
-                parse_mode=pyrogram.enums.ParseMode.DISABLED,
-            )
-            return
+            return await send()
         except pyrogram.errors.FloodWait as wait_err:
-            logger.warning(f"backup {path}: FloodWait {wait_err.value}s")
+            logger.warning(f"backup {what}: FloodWait {wait_err.value}s")
             await asyncio.sleep(wait_err.value + 1)
+
+
+async def _send_local(
+    client: pyrogram.Client,
+    path: str,
+    caption: str,
+    message: Optional[pyrogram.types.Message],
+    temp_path: str,
+):
+    """Upload the local file: videos as videos, everything else as a file.
+
+    The file extension decides the type. The source message, when known,
+    only supplies a video's duration, size and thumbnail.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    kwargs = {"caption": caption, "parse_mode": pyrogram.enums.ParseMode.DISABLED}
+    if ext in VIDEO_EXTS:
+        thumb = None
+        video = getattr(message, "video", None)
+        if video:
+            kwargs.update(
+                duration=video.duration or 0,
+                width=video.width or 0,
+                height=video.height or 0,
+            )
+            # pylint: disable = C0415
+            from module.pyrogram_extension import download_thumbnail
+
+            try:
+                thumb = await download_thumbnail(client, temp_path, message)
+            except Exception as e:
+                logger.warning(f"backup {path}: no thumbnail ({e})")
+        try:
+            await client.send_video(
+                SAVED_MESSAGES, path, thumb=thumb, supports_streaming=True, **kwargs
+            )
+        finally:
+            if thumb and os.path.exists(thumb):
+                os.remove(thumb)
+    else:
+        # images too: as photos Telegram would recompress them, as files
+        # they stay the original
+        await client.send_document(SAVED_MESSAGES, path, **kwargs)
+
+
+async def upload(
+    client: pyrogram.Client,
+    path: str,
+    caption: str,
+    message: Optional[pyrogram.types.Message] = None,
+    temp_path: str = "",
+):
+    """Upload one local file to Saved Messages; nothing is forwarded or copied."""
+    await _retry_flood_wait(
+        lambda: _send_local(client, path, caption, message, temp_path), path
+    )
 
 
 class SavedBackup:
@@ -215,14 +288,26 @@ class SavedBackup:
             uploaded = await remote_names(client, folder, month_dir)
             uploaded |= self.state.sent_names(key, month_dir)
             missing = [n for n in names if n not in uploaded]
-            await self._upload_month(client, key, folder, month_dir, path, missing)
+            messages = (
+                await source_messages(client, chat_id, missing) if missing else {}
+            )
+            await self._upload_month(
+                client, key, folder, month_dir, path, missing, messages
+            )
             if not self.app.is_running:
                 return
             self.state.set(key, month_dir, current)
             self.current.pop(key, None)
 
     async def _upload_month(
-        self, client, key: str, folder: str, month_dir: str, path: str, names
+        self,
+        client,
+        key: str,
+        folder: str,
+        month_dir: str,
+        path: str,
+        names,
+        messages: Dict[int, pyrogram.types.Message],
     ):
         """Send the month's files, max_backup_task at a time, in message order.
 
@@ -237,10 +322,13 @@ class SavedBackup:
             async with limit:
                 if not self.app.is_running:
                     return
+                message_id = message_id_of(name)
                 await upload(
                     client,
                     os.path.join(path, name),
                     caption_for(folder, month_dir, name),
+                    messages.get(message_id) if message_id is not None else None,
+                    self.app.temp_save_path,
                 )
                 self.state.add_sent(key, month_dir, name)
                 done += 1

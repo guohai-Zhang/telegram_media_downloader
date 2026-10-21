@@ -77,6 +77,9 @@ class FakeController:
     def start_download(self):
         self._call("start_download")
 
+    def start_backup(self):
+        self._call("start_backup")
+
     def stop_download(self):
         self._call("stop_download")
 
@@ -211,6 +214,7 @@ class WebApiTestCase(unittest.TestCase):
             headers=h,
         )
         self.client.post("/api/download/start", headers=h)
+        self.client.post("/api/backup/start", headers=h)
         self.client.post("/api/download/stop", headers=h)
         self.client.get("/api/config", headers=h)
         self.assertEqual(
@@ -236,6 +240,7 @@ class WebApiTestCase(unittest.TestCase):
                     {"1": {"enabled": True, "end_month": "2026-09"}},
                 ),
                 ("start_download",),
+                ("start_backup",),
                 ("stop_download",),
                 ("get_config",),
             ],

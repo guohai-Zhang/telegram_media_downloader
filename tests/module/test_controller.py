@@ -172,6 +172,15 @@ class FakeDownloader:
     async def start_download(self, client):
         self.started_with = client
         self.finished = asyncio.Event()
+        self.phase = "download"
+
+    async def start_backup(self, client):
+        self.started_with = client
+        self.finished = asyncio.Event()
+        self.phase = "backup"
+
+    def run_phase(self):
+        return self.phase
 
     def backup_status(self):
         return {}
@@ -736,6 +745,39 @@ class ConfigAndDownloadTestCase(ControllerTestBase):
         self.loop.call_soon_threadsafe(self.downloader.finished.set)
         self.wait_for_state(State.READY)
         self.assertIn("下载完成", self.controller.status()["notice"])
+        self.assertEqual(self.downloader.stop_calls, 1)
+
+    def test_backup_requires_a_chat_with_backup_on(self):
+        self.ready_with_chat()
+        with self.assertRaises(GuiError) as ctx:
+            self.controller.start_backup()
+        self.assertIn("备份", ctx.exception.message)
+        self.assertIs(self.controller.state, State.READY)
+
+    def ready_with_backup(self):
+        self.ready_with_chat()
+        self.controller.save_chats(
+            [-1001], backups={"-1001": {"enabled": True, "end_month": "2026-09"}}
+        )
+
+    def test_backup_runs_and_finishes(self):
+        self.ready_with_backup()
+        self.controller.start_backup()
+        self.assertIs(self.controller.state, State.DOWNLOADING)
+        self.assertEqual(self.controller.status()["phase"], "backup")
+        self.loop.call_soon_threadsafe(self.downloader.finished.set)
+        self.wait_for_state(State.READY)
+        status = self.controller.status()
+        self.assertEqual(status["notice"], "备份完成")
+        self.assertEqual(status["phase"], "")
+        self.assertEqual(self.downloader.stop_calls, 1)
+
+    def test_backup_can_be_stopped(self):
+        self.ready_with_backup()
+        self.controller.start_backup()
+        self.controller.stop_download()
+        self.assertIs(self.controller.state, State.READY)
+        time.sleep(0.2)
         self.assertEqual(self.downloader.stop_calls, 1)
 
     def test_stop_download(self):
