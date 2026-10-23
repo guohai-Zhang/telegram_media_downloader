@@ -298,6 +298,8 @@ class WebApiTestCase(unittest.TestCase):
         self.assertIn('lay-id="uploading">上传中'.encode(), res.data)
         self.assertIn(b'id="upload_list"', res.data)
         self.assertIn(b'id="upload_speed_title"', res.data)
+        self.assertIn('lay-id="skipped">已跳过'.encode(), res.data)
+        self.assertIn(b'id="skip_list"', res.data)
         web._gui["controller"] = None
         web.get_flask_app().config["LOGIN_DISABLED"] = True
         res = self.client.get("/")

@@ -37,6 +37,7 @@
         <li class="layui-this" lay-id="downloading">{{ '下载中' if gui_mode else 'Downloading' }}</li>
         <li lay-id="downloaded">{{ '已完成' if gui_mode else 'Downloaded' }}</li>
         {% if gui_mode %}<li lay-id="uploading">上传中</li>{% endif %}
+        {% if gui_mode %}<li lay-id="skipped">已跳过</li>{% endif %}
       </ul>
       <div class="stop-btn" id="download_state" data-value="{{ download_state }}" onclick="download_state_change(this)"> {{ download_state }} </div>
     </div>
@@ -55,6 +56,14 @@
           <colgroup><col width="160"><col width="90"><col><col width="100"><col width="220"><col width="110"></colgroup>
           <thead><tr><th>频道</th><th>月份</th><th>文件名</th><th>大小</th><th>进度</th><th>速度</th></tr></thead>
           <tbody id="upload_list"></tbody>
+        </table>
+      </div>
+      <div class="layui-tab-item" id="panel_skipped">
+        <p class="gui-upload-summary" id="skip_summary">本次运行还没有跳过视频</p>
+        <table class="layui-table gui-upload-table">
+          <colgroup><col><col width="120"><col width="120"><col width="140"><col width="120"></colgroup>
+          <thead><tr><th>频道</th><th>重复视频</th><th>重复大小</th><th>超过大小限制</th><th>超限大小</th></tr></thead>
+          <tbody id="skip_list"></tbody>
         </table>
       </div>
       {% endif %}

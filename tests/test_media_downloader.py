@@ -1116,6 +1116,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
         rest_app(MOCK_CONF)
         app.max_file_size_mb = 1
         self.addCleanup(setattr, app, "max_file_size_mb", 0)
+        media_downloader._skip_stats.clear()
         message = MockMessage(
             id=900,
             media=True,
@@ -1142,6 +1143,10 @@ class MediaDownloaderTestCase(unittest.TestCase):
         self.assertEqual(downloads, [])
         # kept out of SkipDownload so it stays in ids_to_retry for a larger limit
         self.assertEqual(res, (DownloadStatus.FailedDownload, None))
+        skips = media_downloader.skip_status()
+        self.assertEqual((skips["oversize"], skips["duplicate"]), (1, 0))
+        self.assertEqual(skips["chats"][0]["chat"], "test_size")
+        self.assertEqual(skips["chats"][0]["oversize_size"], "2.0MB")
 
     def test_per_chat_size_limit_overrides_global(self):
         rest_app(MOCK_CONF)

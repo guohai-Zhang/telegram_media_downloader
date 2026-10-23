@@ -253,6 +253,7 @@ class Controller:
                 },
                 "backup": self._downloader.backup_status(),
                 "uploads": self._downloader.upload_status(),
+                "skips": self._downloader.skip_status(),
                 # "download" or "backup": what a DOWNLOADING run is busy with
                 "phase": self._downloader.run_phase()
                 if self._state is State.DOWNLOADING

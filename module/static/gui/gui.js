@@ -234,6 +234,18 @@ layui.use(['element', 'layer'], function () {
     }).join(''));
   }
 
+  // the 已跳过 tab: videos this run skipped per chat, duplicates and oversize
+  function renderSkips(k) {
+    k = k || { chats: [], duplicate: 0, oversize: 0 };
+    $('#skip_summary').text(k.chats.length
+      ? '本次运行跳过重复视频 ' + k.duplicate + ' 个，超过大小限制 ' + k.oversize + ' 个（超限的提高限制后下次运行会重新下载）'
+      : '本次运行还没有跳过视频');
+    $('#skip_list').html(k.chats.map(function (c) {
+      return '<tr><td>' + esc(c.chat) + '</td><td>' + esc(String(c.duplicate)) + '</td><td>' + esc(c.duplicate_size) + '</td>' +
+        '<td>' + esc(String(c.oversize)) + '</td><td>' + esc(c.oversize_size) + '</td></tr>';
+    }).join(''));
+  }
+
   function refreshStatus() {
     return api('GET', 'api/status', undefined, true).then(function (s) {
       var changed = !status || status.state !== s.state;
@@ -242,6 +254,7 @@ layui.use(['element', 'layer'], function () {
       renderAccount(s);
       renderBackup(s.backup);
       renderUploads(s.uploads);
+      renderSkips(s.skips);
       $('#settings_form :input').prop('disabled', s.state === 'downloading' || s.state === 'stopping');
       if (changed) {
         if (!userPickedTab || s.state === 'downloading') {

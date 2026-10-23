@@ -188,6 +188,9 @@ class FakeDownloader:
     def backup_status(self):
         return {}
 
+    def skip_status(self):
+        return {"chats": [], "duplicate": 0, "oversize": 0}
+
     async def wait_until_finished(self):
         await self.finished.wait()
 

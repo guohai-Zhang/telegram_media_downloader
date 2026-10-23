@@ -31,7 +31,7 @@ from module.pyrogram_extension import (
     upload_telegram_chat,
 )
 from module.web import init_web
-from utils.format import truncate_filename, validate_title
+from utils.format import format_byte, truncate_filename, validate_title
 from utils.log import LogFilter
 from utils.meta import print_meta
 from utils.meta_data import MetaData
@@ -59,6 +59,8 @@ _saved_backup: Optional[SavedBackup] = None
 _backup_task: Optional[asyncio.Task] = None
 # True while a run only backs up, started by start_backup()
 _backup_only = False
+# videos this run skipped, per chat: {chat key: {"chat", "duplicate", ...}}
+_skip_stats: dict = {}
 
 logging.getLogger("pyrogram.session.session").addFilter(LogFilter())
 logging.getLogger("pyrogram.client").addFilter(LogFilter())
@@ -400,6 +402,43 @@ def _chat_save_root(file_name: str) -> Optional[str]:
     return os.path.join(app.save_path, rel.split(os.sep)[0])
 
 
+def _count_skip(
+    chat_key: str, message: pyrogram.types.Message, _type: str, kind: str, size: int
+):
+    """Count a video skipped as a duplicate or for its size, for the GUI."""
+    if _type != "video":
+        return
+    title = message.chat.title if message.chat and message.chat.title else chat_key
+    stat = _skip_stats.setdefault(
+        chat_key,
+        {
+            "chat": title,
+            "duplicate": 0,
+            "duplicate_size": 0,
+            "oversize": 0,
+            "oversize_size": 0,
+        },
+    )
+    stat[kind] += 1
+    stat[kind + "_size"] += size or 0
+
+
+def skip_status() -> dict:
+    """Videos this run skipped per chat: duplicates and ones over the limit."""
+    return {
+        "chats": [
+            dict(
+                stat,
+                duplicate_size=format_byte(stat["duplicate_size"]),
+                oversize_size=format_byte(stat["oversize_size"]),
+            )
+            for stat in _skip_stats.values()
+        ],
+        "duplicate": sum(s["duplicate"] for s in _skip_stats.values()),
+        "oversize": sum(s["oversize"] for s in _skip_stats.values()),
+    }
+
+
 def _find_duplicate(
     chat_key: str, message: pyrogram.types.Message, info: MediaInfo, file_name: str
 ) -> Optional[str]:
@@ -501,6 +540,7 @@ async def download_media(
 
             limit_mb = _size_limit_mb(node)
             if _exceeds_size_limit(media_size, limit_mb):
+                _count_skip(chat_key, message, _type, "oversize", media_size)
                 logger.info(
                     f"id={message.id} {ui_file_name} is larger than "
                     f"max_file_size_mb={limit_mb}, skipped for now.\n"
@@ -527,6 +567,7 @@ async def download_media(
         info = MediaInfo.from_media(_media, file_name)
         duplicate = _find_duplicate(chat_key, message, info, file_name)
         if duplicate:
+            _count_skip(chat_key, message, _type, "duplicate", media_size)
             logger.info(
                 f"id={message.id} {ui_file_name} duplicates {duplicate}, "
                 "download skipped.\n"
@@ -814,6 +855,7 @@ async def start_download(client: pyrogram.Client):
     global queue, _backup_task, _backup_only
     _backup_only = False
     reset_download_stat()
+    _skip_stats.clear()
     queue = asyncio.Queue()
     app.is_running = True
     _set_transmissions(client)
