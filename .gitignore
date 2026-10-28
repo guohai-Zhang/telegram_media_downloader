@@ -73,3 +73,7 @@ saved_backup.json
 *.scss
 *.css.map
 .serena/
+
+# Claude Code worktrees and SDD scratch
+.claude/worktrees/
+.superpowers/
